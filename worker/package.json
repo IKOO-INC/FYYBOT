@@ -14,10 +14,12 @@
     "@whiskeysockets/baileys": "6.7.24",
     "dotenv": "^16.4.7",
     "mongodb": "^6.20.0",
-    "pino": "^9.5.0"
+    "pino": "^9.5.0",
+    "qrcode": "^1.5.4"
   },
   "devDependencies": {
     "@types/node": "^22.15.0",
+    "@types/qrcode": "^1.5.5",
     "tsx": "^4.19.2",
     "typescript": "^5.8.3"
   },

@@ -18,7 +18,8 @@ Panel pribadi untuk menghosting sesi WhatsApp dengan library **Baileys** (WhatsA
 5. [Environment variables](#environment-variables)
 6. [Cara pakai (tautkan WhatsApp)](#cara-pakai-tautkan-whatsapp)
 7. [Deploy panel ke Vercel](#deploy-panel-ke-vercel)
-8. [Deploy worker](#deploy-worker)
+8. [Mode PC (VS Code)](#mode-pc-vs-code--worker-di-komputer-sendiri)
+9. [Deploy worker](#deploy-worker)
 9. [Skema MongoDB](#skema-mongodb)
 10. [API](#api)
 11. [Keamanan](#keamanan)
@@ -167,6 +168,7 @@ masuk ke antrean `wa_commands`, dieksekusi worker dalam ≈1 detik.
 | `WA_AUTO_MEDIA` | Worker | tidak | `true` |
 | `WA_MAX_MEDIA_MB` | Worker | tidak | `8` |
 | `WA_HISTORY_LIMIT` | Worker | tidak | `60` |
+| `WA_TERMINAL_QR` | Worker | tidak | aktif di terminal interaktif |
 | `WA_LOG_LEVEL` | Worker | tidak | `warn` |
 | `WA_QR_TTL_FIRST_MS` | Worker | tidak | `60000` (sama dengan Baileys) |
 | `WA_QR_TTL_NEXT_MS` | Worker | tidak | `20000` (sama dengan Baileys) |
@@ -211,6 +213,72 @@ masuk ke antrean `wa_commands`, dieksekusi worker dalam ≈1 detik.
 
 > Catatan: jangan menjalankan Baileys di dalam serverless function Vercel —
 > socket-nya akan diputus saat function selesai. Gunakan worker terpisah.
+
+---
+
+## Mode PC (VS Code) — worker di komputer sendiri
+
+Cara paling bebas batas: worker Baileys jalan di PC/laptop kamu, panel tetap di Vercel
+(atau lokal). Sesi WhatsApp tetap tersimpan di MongoDB, jadi restart tidak perlu scan ulang.
+
+**Syarat**
+
+- Node.js **20+** (`node -v`) dan Git.
+- MongoDB Atlas (yang sama dengan panel) — pastikan IP kamu ada di **Network Access**
+  (atau izinkan `0.0.0.0/0`).
+- PC menyala + internet selama ingin WhatsApp online.
+
+**Langkah**
+
+```bash
+git clone https://github.com/IKOO-INC/FYYBOT.git
+cd FYYBOT
+
+# 1) install dependency panel + worker (atau: npm run setup)
+npm install
+npm --prefix worker install
+
+# 2) siapkan env: isi MONGODB_URI (dan ADMIN_PASSWORD bila mau panel lokal)
+cp .env.example .env.local        # Windows: copy .env.example .env.local
+#   edit .env.local → MONGODB_URI=..., MONGODB_DB_NAME=fyywhatsapp
+
+# 3) jalankan worker
+npm run worker        # tsx watch (auto reload)
+npm run worker:start  # stabil, tanpa watch
+```
+
+QR muncul **langsung di terminal** (ASCII) — pindai dari WhatsApp → ⋮ → Perangkat tertaut,
+atau buka panel di `/panel/connect` dan pindai QR di sana. Kalau tidak ingin QR di terminal:
+`WA_TERMINAL_QR=false`.
+
+Panel lokal (opsional): jalankan `npm run dev` di terminal lain → http://localhost:3000.
+
+**Di VS Code:** `Ctrl+Shift+B` menjalankan task **Worker: start (Baileys, mode PC)**.
+Task lain: *Setup: install semua dependency*, *Worker: dev (auto reload)*,
+*Panel: dev (localhost:3000)* — lihat `.vscode/tasks.json`.
+
+**Supaya worker tetap hidup**
+
+```bash
+npm i -g pm2
+cd worker
+pm2 start npm --name fyy-worker -- start
+pm2 save                      # auto-start setelah reboot (Windows: pm2-startup)
+pm2 logs fyy-worker
+```
+
+Alternatif Windows: **Task Scheduler** → *At log on* → jalankan
+`cmd /c "cd /d C:\path\FYYBOT\worker && npm start"`.
+
+**Penting**
+
+- Jalankan **satu worker saja**. Kalau workflow GitHub Actions juga aktif, worker di PC
+  akan menunggu lock (±5 menit) lalu keluar dengan pesan
+  *“worker lain masih aktif memegang sesi”*. Matikan dulu:
+  GitHub → **Actions** → **WhatsApp Worker** → **⋯** → **Disable workflow**.
+- PC tidur/mati → WhatsApp terputus. Pesan yang masuk saat offline dikirim WhatsApp
+  begitu worker menyala lagi.
+- `.env` / `.env.local` sudah di-`.gitignore` — jangan pernah commit kredensial.
 
 ---
 
