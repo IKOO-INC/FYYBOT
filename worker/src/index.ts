@@ -13,6 +13,7 @@ import makeWASocket, {
 import type { Boom } from '@hapi/boom'
 import pino from 'pino'
 import os from 'node:os'
+import QRCode from 'qrcode'
 import { ObjectId, type Collection, type Db, type Document } from 'mongodb'
 import { config, assertConfig } from './config'
 import { COL, closeDb, db, ensureIndexes } from './db'
@@ -804,6 +805,18 @@ async function start() {
           { qrSeq: 1 },
         )
         log(`QR #${qrCount} dari Baileys siap dipindai (berlaku ${Math.round(ttl / 1000)} dtk)`)
+        if (config.terminalQr) {
+          try {
+            const ascii = await QRCode.toString(qr, { type: 'terminal', small: true })
+            console.log(
+              `\n=== SCAN QR WHATSAPP (berlaku ${Math.round(ttl / 1000)} dtk) ===\n` +
+                `WhatsApp → ⋮ → Perangkat tertaut → Tautkan perangkat\n`,
+            )
+            console.log(ascii)
+          } catch (err) {
+            logger.debug({ err }, 'gagal mencetak QR di terminal')
+          }
+        }
       }
       if (connection === 'open') {
         reconnectAttempts = 0
@@ -829,6 +842,7 @@ async function start() {
           lastError: null,
         })
         log('tersambung sebagai', me.number || me.id)
+        console.log(`\n✅ WhatsApp tersambung sebagai ${me.name || me.number || me.id}. Sesi tersimpan di MongoDB.\n`)
       }
       if (connection === 'close') {
         meId = null

@@ -53,6 +53,12 @@ export const config = {
   // berikutnya bisa mengambil alih tanpa tumpang tindih.
   maxRuntimeMs: Number(process.env.WA_MAX_RUNTIME_MS || 0),
   version: process.env.WORKER_VERSION || '1.1.0',
+  // Mode PC: tampilkan QR sebagai teks di terminal supaya bisa langsung
+  // dipindai tanpa membuka panel. Default aktif hanya kalau dijalankan
+  // di terminal interaktif (bukan CI/GitHub Actions).
+  terminalQr: process.env.WA_TERMINAL_QR
+    ? process.env.WA_TERMINAL_QR === 'true'
+    : Boolean(process.stdout.isTTY) && !process.env.CI,
 }
 
 export function assertConfig() {
