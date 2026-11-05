@@ -92,9 +92,13 @@ async function writeStatus(
   inc: Record<string, number> = {},
 ) {
   const { session } = await collections()
+  // MongoDB menolak ($set + $unset pada field yang sama → "conflict at 'qr'").
+  // Buang key yang ada di `unset` (dan `inc`) dari `$set`.
+  const removed = new Set([...Object.keys(unset), ...Object.keys(inc)])
+  const writable = Object.fromEntries(Object.entries(set).filter(([key]) => !removed.has(key)))
   const update: Record<string, unknown> = {
     $set: clean({
-      ...set,
+      ...writable,
       workerId: config.workerId,
       workerVersion: config.version,
       workerAt: Date.now(),
@@ -1035,10 +1039,14 @@ async function bootstrap() {
     }
   }
 
-  await writeStatus(
-    { status: 'connecting', startedAt: Date.now(), lastError: null, qr: null, qrExpiresAt: null, qrSeq: 0 },
-    { qr: '' },
-  )
+  await writeStatus({
+    status: 'connecting',
+    startedAt: Date.now(),
+    lastError: null,
+    qr: null,
+    qrExpiresAt: null,
+    qrSeq: 0,
+  })
 
   heartbeatTimer = setInterval(() => {
     writeStatus({}).catch(() => null)

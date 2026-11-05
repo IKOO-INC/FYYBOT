@@ -9,12 +9,20 @@
       "presentation": { "reveal": "always", "panel": "dedicated" }
     },
     {
+      "label": "Panel + Worker (sekali klik)",
+      "type": "shell",
+      "command": "npm run local",
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true },
+      "group": { "kind": "build", "isDefault": true }
+    },
+    {
       "label": "Worker: start (Baileys, mode PC)",
       "type": "shell",
       "command": "npm --prefix worker start",
       "problemMatcher": [],
       "presentation": { "reveal": "always", "panel": "dedicated", "clear": true },
-      "group": { "kind": "build", "isDefault": true }
+      "group": "build"
     },
     {
       "label": "Worker: dev (auto reload)",

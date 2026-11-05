@@ -10,7 +10,8 @@
     "typecheck": "tsc --noEmit",
     "worker": "npm --prefix worker run dev",
     "worker:start": "npm --prefix worker start",
-    "setup": "npm install --no-audit --no-fund && npm --prefix worker install --no-audit --no-fund"
+    "setup": "npm install --no-audit --no-fund && npm --prefix worker install --no-audit --no-fund",
+    "local": "node scripts/dev-local.mjs"
   },
   "dependencies": {
     "mongodb": "^6.20.0",

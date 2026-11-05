@@ -247,11 +247,23 @@ npm run worker        # tsx watch (auto reload)
 npm run worker:start  # stabil, tanpa watch
 ```
 
+**Sekali jalan, panel + worker bersamaan:**
+
+```bash
+npm run local
+```
+
+Script ini mengecek `.env.local` (Node 20+, MONGODB_URI bukan placeholder, ADMIN_PASSWORD,
+dependency terpasang), menyalakan **worker** dan **panel** dalam satu terminal dengan prefiks
+`[worker]` / `[panel]`, lalu `Ctrl+C` mematikan keduanya. Kalau worker mati (mis. lock dipakai
+proses lain), panel dibiarkan tetap hidup.
+
 QR muncul **langsung di terminal** (ASCII) — pindai dari WhatsApp → ⋮ → Perangkat tertaut,
 atau buka panel di `/panel/connect` dan pindai QR di sana. Kalau tidak ingin QR di terminal:
 `WA_TERMINAL_QR=false`.
 
-Panel lokal (opsional): jalankan `npm run dev` di terminal lain → http://localhost:3000.
+Panel lokal (opsional): `npm run dev` di terminal lain → http://localhost:3000
+(atau cukup `npm run local` di atas yang menjalankan keduanya).
 
 **Di VS Code:** `Ctrl+Shift+B` menjalankan task **Worker: start (Baileys, mode PC)**.
 Task lain: *Setup: install semua dependency*, *Worker: dev (auto reload)*,
@@ -461,3 +473,12 @@ memerlukan cookie sesi admin.
 Proyek ini **tidak berafiliasi dengan WhatsApp Inc.** Baileys adalah library tidak resmi.
 Gunakan hanya untuk akun yang Anda miliki, patuhi Ketentuan Layanan WhatsApp, dan hindari
 pengiriman massal/spam. Risiko pembatasan akun ditanggung pengguna.
+
+---
+
+## Catatan rilis
+
+- **Fixed:** `MongoServerError: Updating the path 'qr' would create a conflict at 'qr'`
+  (error code 40) yang membuat worker berhenti saat bootstrap. `writeStatus` sekarang
+  membuang key yang ada di `$unset`/`$inc` dari `$set`, dan pemanggilan di bootstrap
+  tidak lagi mengirim `qr` di dua operator. Perbarui clone lama dengan `git pull`.
