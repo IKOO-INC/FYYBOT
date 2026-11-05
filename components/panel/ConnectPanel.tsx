@@ -44,7 +44,30 @@ type SessionResponse = {
     qrExpiresIn: number | null
     qrTtl: number | null
     qrSeq: number
+    autoTrigger: {
+      configured: boolean
+      cooldownSeconds: number
+      lastAt: number | null
+      lastOk: boolean | null
+      lastError: string | null
+      actionsUrl: string
+      repo: string
+      workflow: string
+    } | null
   }
+}
+
+type TriggerResponse = {
+  ok: boolean
+  alreadyRunning?: boolean
+  alreadyRequested?: boolean
+  dispatched?: boolean
+  configured?: boolean
+  waitSeconds?: number
+  message?: string
+  error?: string
+  hint?: string
+  actionsUrl?: string
 }
 
 const statusMap: Record<string, { label: string; tone: string }> = {
@@ -57,7 +80,7 @@ const statusMap: Record<string, { label: string; tone: string }> = {
 const WORKER_STEPS = [
   {
     title: 'GitHub Actions (tanpa console)',
-    body: 'Tambahkan secret MONGODB_URI di repo, lalu jalankan workflow “WhatsApp Worker”. Worker hidup ±6 jam dan menyalakan dirinya sendiri.',
+    body: 'Tambahkan secret MONGODB_URI di repo, lalu jalankan workflow “WhatsApp Worker”. Worker menyalakan dirinya sendiri, dan panel bisa memicunya otomatis bila GITHUB_TOKEN diisi.',
   },
   {
     title: 'Render / Railway (web UI)',
@@ -83,11 +106,15 @@ export default function ConnectPanel() {
   const [showWorkerHelp, setShowWorkerHelp] = useState(false)
   const lastSeq = useRef<number | null>(null)
   const lastPairCode = useRef<string | null>(null)
+  const autoAttempts = useRef(0)
+  const [autoState, setAutoState] = useState<'idle' | 'requesting' | 'waiting' | 'cooldown' | 'error'>('idle')
+  const [autoMessage, setAutoMessage] = useState<string | null>(null)
 
   const { data, error, refresh } = usePoll<SessionResponse>('/api/session', 2000)
   const session = data?.session
   const connected = Boolean(session?.online)
   const workerAlive = Boolean(session?.workerAlive)
+  const autoTrigger = data?.session?.autoTrigger ?? null
 
   // QR dari Baileys berganti tiap ±20 detik (QR pertama 60 detik).
   const qrSeq = session?.qrSeq ?? 0
@@ -133,9 +160,50 @@ export default function ConnectPanel() {
     if (!hasQr) setZoom(false)
   }, [hasQr])
 
+  // Auto-start: begitu panel tahu worker mati dan GITHUB_TOKEN tersedia,
+  // minta GitHub Actions menyalakan worker (maks 1 percobaan otomatis).
+  useEffect(() => {
+    if (workerAlive) {
+      autoAttempts.current = 0
+      setAutoState('idle')
+      setAutoMessage(null)
+      return
+    }
+    if (!autoTrigger?.configured) return
+    if (autoAttempts.current >= 1) return
+    const timer = window.setTimeout(() => {
+      void startWorker(true)
+    }, 3500)
+    return () => window.clearTimeout(timer)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [workerAlive, autoTrigger?.configured])
+
   const qrExpired = hasQr && secondsLeft <= 0
   const progress = qrTtl > 0 ? Math.max(0, Math.min(100, (secondsLeft / qrTtl) * 100)) : 0
   const pairingExpired = Boolean(code) && pairSeconds <= 0
+
+  async function startWorker(auto = false) {
+    if (auto) autoAttempts.current += 1
+    setAutoState('requesting')
+    setAutoMessage(auto ? 'Worker mati — menyalakan lewat GitHub Actions…' : 'Meminta GitHub Actions menyalakan worker…')
+    try {
+      const res = await apiFetch<TriggerResponse>('/api/session/worker', { method: 'POST' })
+      if (res.alreadyRunning) {
+        setAutoState('waiting')
+        setAutoMessage(res.message || 'Worker sudah aktif, menunggu heartbeat…')
+      } else if (res.alreadyRequested) {
+        setAutoState('cooldown')
+        setAutoMessage(res.message || 'Worker sedang dinyalakan, tunggu sebentar…')
+      } else {
+        setAutoState('waiting')
+        setAutoMessage(res.message || 'Worker diminta menyala. Biasanya siap dalam ±1 menit.')
+      }
+      void refresh()
+    } catch (err) {
+      setAutoState('error')
+      setAutoMessage(err instanceof Error ? err.message : 'Gagal menyalakan worker')
+    }
+  }
 
   async function pair() {
     const digits = phone.replace(/[^0-9]/g, '')
@@ -255,22 +323,75 @@ export default function ConnectPanel() {
         {!workerAlive && (
           <div className="mt-5 rounded-2xl border border-amber-400/30 bg-amber-400/10 px-4 py-3.5 text-amber-800 dark:text-amber-200">
             <div className="flex flex-wrap items-start justify-between gap-3">
-              <div>
+              <div className="min-w-0">
                 <p className="flex items-center gap-2 text-[13px] font-semibold">
                   <BoltIcon size={15} /> Worker belum aktif — QR &amp; pairing code belum bisa dibuat
                 </p>
                 <p className="mt-1 max-w-2xl text-[11.5px] leading-relaxed opacity-90">
-                  Panel ini hanya UI; koneksi WhatsApp dipegang proses worker (Baileys). Nyalakan worker dengan
-                  MONGODB_URI yang sama, lalu halaman ini otomatis menampilkan QR.
+                  Panel ini hanya UI; koneksi WhatsApp dipegang proses worker (Baileys).
+                  {autoTrigger?.configured
+                    ? ' Auto-start aktif: panel meminta GitHub Actions menyalakan worker secara otomatis.'
+                    : ' Nyalakan worker dengan MONGODB_URI yang sama, lalu halaman ini otomatis menampilkan QR.'}
                 </p>
+
+                {(autoState !== 'idle' || autoMessage) && (
+                  <p className="mt-2 flex items-start gap-2 rounded-lg bg-black/5 px-2.5 py-2 text-[11px] leading-relaxed dark:bg-white/5">
+                    {autoState === 'requesting' || autoState === 'waiting' ? (
+                      <span className="mt-0.5 h-3 w-3 shrink-0 animate-spin rounded-full border-[1.5px] border-current border-t-transparent" />
+                    ) : (
+                      <span className="mt-0.5 h-2 w-2 shrink-0 rounded-full bg-current opacity-70" />
+                    )}
+                    <span>
+                      {autoMessage}
+                      {autoState === 'cooldown' && autoTrigger && (
+                        <> Cooldown {autoTrigger.cooldownSeconds}s antar-permintaan.</>
+                      )}
+                    </span>
+                  </p>
+                )}
+
+                {!autoTrigger?.configured && (
+                  <p className="mt-2 text-[10.5px] leading-relaxed opacity-80">
+                    Auto-start belum aktif. Tambahkan env <code>GITHUB_TOKEN</code> (PAT dengan izin{' '}
+                    <strong>Actions: Read and write</strong>) di Vercel supaya panel bisa menyalakan worker sendiri.
+                  </p>
+                )}
+
+                {autoTrigger?.lastError && autoState === 'error' && (
+                  <p className="mt-2 text-[10.5px] leading-relaxed font-medium opacity-90">
+                    Terakhir gagal: {autoTrigger.lastError}
+                  </p>
+                )}
               </div>
-              <button
-                type="button"
-                onClick={() => setShowWorkerHelp((value) => !value)}
-                className="shrink-0 rounded-full border border-amber-500/40 px-3 py-1.5 text-[11.5px] font-semibold"
-              >
-                {showWorkerHelp ? 'Sembunyikan cara' : 'Cara menyalakan'}
-              </button>
+
+              <div className="flex shrink-0 flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => void startWorker(false)}
+                  disabled={autoState === 'requesting' || !autoTrigger?.configured}
+                  className="inline-flex items-center gap-1.5 rounded-full bg-amber-500/90 px-3 py-1.5 text-[11.5px] font-semibold text-white transition hover:bg-amber-500 disabled:opacity-50"
+                >
+                  <BoltIcon size={12} />
+                  {autoState === 'requesting' ? 'Menyatakan…' : 'Nyalakan worker'}
+                </button>
+                {autoTrigger?.actionsUrl && (
+                  <a
+                    href={autoTrigger.actionsUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="rounded-full border border-amber-500/40 px-3 py-1.5 text-[11.5px] font-semibold"
+                  >
+                    Lihat Actions
+                  </a>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setShowWorkerHelp((value) => !value)}
+                  className="rounded-full border border-amber-500/40 px-3 py-1.5 text-[11.5px] font-semibold"
+                >
+                  {showWorkerHelp ? 'Sembunyikan cara' : 'Cara menyalakan'}
+                </button>
+              </div>
             </div>
             {showWorkerHelp && (
               <div className="mt-3 grid gap-2 sm:grid-cols-3">
@@ -560,6 +681,15 @@ export default function ConnectPanel() {
                       : 'offline',
                   },
                   { icon: WifiIcon, k: 'Mulai worker', v: session?.startedAt ? timeAgo(session.startedAt) : '—' },
+                  {
+                    icon: BoltIcon,
+                    k: 'Auto-start',
+                    v: autoTrigger?.configured
+                      ? autoTrigger.lastAt
+                        ? `${autoTrigger.lastOk === false ? 'gagal' : 'dipicu'} ${timeAgo(autoTrigger.lastAt)}`
+                        : 'aktif (belum dipakai)'
+                      : 'nonaktif',
+                  },
                 ].map((row) => {
                   const Icon = row.icon
                   return (

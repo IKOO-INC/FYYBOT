@@ -1,7 +1,8 @@
 import { NextResponse } from 'next/server'
 import QRCode from 'qrcode'
 import { mongoError, requireAuth } from '@/lib/api'
-import { getSessionView } from '@/lib/store'
+import { WORKER_TRIGGER_COOLDOWN_MS, getSessionView } from '@/lib/store'
+import { githubConfig } from '@/lib/github'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -69,6 +70,16 @@ export async function GET() {
           qrExpiresIn,
           qrTtl,
           qrSeq: session.qrSeq || 0,
+          autoTrigger: {
+            configured: githubConfig.enabled,
+            cooldownSeconds: Math.round(WORKER_TRIGGER_COOLDOWN_MS / 1000),
+            lastAt: session.workerTriggerAt || null,
+            lastOk: session.workerTriggerOk ?? null,
+            lastError: session.workerTriggerError || null,
+            actionsUrl: githubConfig.actionsUrl,
+            repo: githubConfig.repo,
+            workflow: githubConfig.workflow,
+          },
         },
       },
       { headers: { 'cache-control': 'no-store' } },
