@@ -157,6 +157,11 @@ masuk ke antrean `wa_commands`, dieksekusi worker dalam ≈1 detik.
 | `ADMIN_SECRET` | Panel (sign cookie) | disarankan | turunan password |
 | `MONGODB_URI` | Panel + worker | ya | — |
 | `MONGODB_DB_NAME` | Panel + worker | tidak | `fyywhatsapp` |
+| `GITHUB_TOKEN` | Panel | tidak | — (aktifkan auto-start worker) |
+| `GITHUB_REPO` | Panel | tidak | `IKOO-INC/FYYBOT` |
+| `GITHUB_WORKFLOW` | Panel | tidak | `worker.yml` |
+| `GITHUB_REF_NAME` | Panel | tidak | `main` |
+| `CRON_SECRET` | Panel | tidak | — (untuk `/api/cron/worker`) |
 | `WA_SESSION_ID` | Worker | tidak | `default` |
 | `WA_SYNC_FULL_HISTORY` | Worker | tidak | `true` |
 | `WA_AUTO_MEDIA` | Worker | tidak | `true` |
@@ -240,6 +245,29 @@ Catatan:
 - Butuh sesi benar-benar 24/7 tanpa jeda? Pakai Render/Railway/VPS (opsi b/c),
   atau turunkan `WA_MAX_RUNTIME_MS` + jadwal jadi `*/30 * * * *`.
 
+#### Auto-start dari panel (opsional, bikin makin jarang buka GitHub)
+
+Kalau rantai Actions putus (misal run gagal), panel bisa menyalakan worker sendiri:
+
+1. GitHub → **Settings → Developer settings → Personal access tokens → Fine-grained tokens**
+   → **Generate new token**.
+2. **Repository access**: pilih `IKOO-INC/FYYBOT`.
+3. **Permissions → Repository permissions → Actions: Read and write** (selebihnya No access).
+4. Salin token, lalu di Vercel → **Settings → Environment Variables** tambahkan `GITHUB_TOKEN`
+   (Production) → **Redeploy**.
+5. (Opsional) tambah `CRON_SECRET` supaya cron eksternal bisa memicu panel:
+   `GET https://fyywhatsappadmin.vercel.app/api/cron/worker?key=<CRON_SECRET>` tiap 5 menit
+   (cron-job.org / UptimeRobot). Endpoint ini hanya men-dispatch kalau heartbeat worker mati.
+
+Perilaku:
+
+- Panel mengecek heartbeat; kalau worker mati > 45 detik, halaman Koneksi otomatis
+  memanggil `POST /api/session/worker` → GitHub `workflow_dispatch`. Ada tombol
+  **Nyalakan worker** untuk memicu manual.
+- Cooldown 3 menit antar-permintaan (`workerTriggerAt` di `wa_status`) supaya tidak spam.
+- Kalau worker sudah hidup, permintaan diabaikan (`alreadyRunning`).
+- Status terakhir (ok/gagal + pesan) tampil di banner dan di halaman Pengaturan.
+
 ### b. VPS / server sendiri (systemd)
 
 ```bash
@@ -316,7 +344,9 @@ memerlukan cookie sesi admin.
 | --- | --- |
 | `POST /api/auth/login` | `{ password }` → set cookie httpOnly |
 | `POST /api/auth/logout` | hapus cookie panel |
-| `GET /api/session` | status sesi + QR (data URL) + sisa umur QR/pairing code |
+| `GET /api/session` | status sesi + QR (data URL) + sisa umur QR/pairing code + info auto-start |
+| `POST /api/session/worker` | nyalakan worker lewat GitHub Actions (cooldown 3 menit) |
+| `GET/POST /api/cron/worker?key=` | pemicu cron eksternal (butuh `CRON_SECRET`) |
 | `POST /api/session/action` | `{ action: "pair" \| "logout" \| "restart", phone? }` |
 | `GET /api/chats?filter=all\|unread\|groups\|archived&q=` | daftar chat |
 | `POST /api/chats/action` | `{ jid, action: "read" \| "typing" }` |

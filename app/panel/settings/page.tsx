@@ -1,10 +1,11 @@
 import type { Metadata } from 'next'
 import Link from 'next/link'
 import LogoutButton from '@/components/panel/LogoutButton'
-import { DatabaseIcon, GlobeIcon, LockIcon, QrIcon, WifiIcon } from '@/components/icons'
+import { BoltIcon, DatabaseIcon, GlobeIcon, LockIcon, QrIcon, WifiIcon } from '@/components/icons'
 import { adminPassword } from '@/lib/auth'
 import { COLLECTIONS, getDb, mongoConfigured, mongoUriKind } from '@/lib/mongo'
 import { getSessionView } from '@/lib/store'
+import { githubConfig } from '@/lib/github'
 import { timeAgo } from '@/lib/format'
 
 export const dynamic = 'force-dynamic'
@@ -53,6 +54,11 @@ export default async function SettingsPage() {
     { icon: LockIcon, label: 'Password admin', value: adminPassword() ? 'aktif' : 'belum diset' },
     { icon: WifiIcon, label: 'Worker', value: session?.workerAlive ? `aktif · heartbeat ${session.heartbeatAge ? Math.round(session.heartbeatAge / 1000) : 0}s lalu` : 'offline' },
     { icon: QrIcon, label: 'Status WhatsApp', value: session?.status || 'disconnected' },
+    {
+      icon: BoltIcon,
+      label: 'Auto-start worker',
+      value: githubConfig.enabled ? `aktif · ${githubConfig.repo}` : 'nonaktif (GITHUB_TOKEN kosong)',
+    },
     { icon: GlobeIcon, label: 'Region deploy', value: process.env.VERCEL_REGION || 'lokal / worker' },
   ]
 

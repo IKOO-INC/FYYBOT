@@ -47,6 +47,51 @@ export async function getSessionView(): Promise<SessionView> {
   }
 }
 
+/** Jeda minimum antar-permintaan auto-start (mencegah spam dispatch). */
+export const WORKER_TRIGGER_COOLDOWN_MS = 3 * 60_000
+
+/**
+ * Klaim slot auto-start worker secara atomik. Mengembalikan `allowed: false`
+ * bila ada permintaan lain dalam masa cooldown.
+ */
+export async function claimWorkerTrigger(
+  cooldownMs = WORKER_TRIGGER_COOLDOWN_MS,
+): Promise<{ allowed: boolean; lastAt: number | null; waitSeconds: number }> {
+  const database = await db()
+  const col = database.collection<SessionDoc>(COLLECTIONS.session)
+  const now = Date.now()
+
+  await col.updateOne({ _id: STATUS_ID }, { $setOnInsert: { status: 'disconnected' } }, { upsert: true })
+
+  const claimed = await col.updateOne(
+    {
+      _id: STATUS_ID,
+      $or: [{ workerTriggerAt: { $exists: false } }, { workerTriggerAt: null }, { workerTriggerAt: { $lt: now - cooldownMs } }],
+    },
+    { $set: { workerTriggerAt: now, workerTriggerBy: 'panel' } },
+  )
+
+  const doc = await col.findOne({ _id: STATUS_ID }, { projection: { workerTriggerAt: 1 } })
+  const lastAt = doc?.workerTriggerAt ?? null
+  const waitSeconds = lastAt ? Math.max(0, Math.ceil((lastAt + cooldownMs - now) / 1000)) : 0
+
+  return { allowed: claimed.modifiedCount === 1, lastAt, waitSeconds }
+}
+
+export async function recordWorkerTrigger(result: { ok: boolean; error?: string | null }) {
+  const database = await db()
+  await database.collection<SessionDoc>(COLLECTIONS.session).updateOne(
+    { _id: STATUS_ID },
+    {
+      $set: {
+        workerTriggerOk: result.ok,
+        workerTriggerError: result.ok ? null : result.error || 'Gagal memicu workflow',
+        workerTriggerAt: Date.now(),
+      },
+    },
+  )
+}
+
 export async function countUnread(): Promise<number> {
   const database = await db()
   const rows = await database

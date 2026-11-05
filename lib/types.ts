@@ -26,6 +26,11 @@ export interface SessionDoc {
   workerAt?: number | null
   startedAt?: number | null
   connectedAt?: number | null
+  // Auto-start worker lewat GitHub Actions (dipicu panel saat worker mati).
+  workerTriggerAt?: number | null
+  workerTriggerBy?: string | null
+  workerTriggerOk?: boolean | null
+  workerTriggerError?: string | null
 }
 
 export interface ChatDoc {
