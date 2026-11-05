@@ -1,0 +1,185 @@
+import { ObjectId, type Collection } from 'mongodb'
+import { COLLECTIONS, ensureIndexes, getDb } from './mongo'
+import type { ChatDoc, ChatSummary, CommandDoc, CommandType, MessageDoc, SessionDoc } from './types'
+
+const STATUS_ID = 'session'
+let indexesReady: Promise<void> | null = null
+
+async function db() {
+  const database = await getDb()
+  if (!indexesReady) indexesReady = ensureIndexes(database)
+  return database
+}
+
+export function jidToPhone(jid?: string | null) {
+  if (!jid) return null
+  const user = jid.split('@')[0]?.split(':')[0]
+  return user || null
+}
+
+export async function getSessionDoc(): Promise<SessionDoc> {
+  const database = await db()
+  const doc = await database.collection<SessionDoc>(COLLECTIONS.session).findOne({ _id: STATUS_ID })
+  return (
+    doc || {
+      status: 'disconnected',
+      me: null,
+    }
+  )
+}
+
+export interface SessionView extends SessionDoc {
+  online: boolean
+  workerAlive: boolean
+  heartbeatAge: number | null
+}
+
+export async function getSessionView(): Promise<SessionView> {
+  const doc = await getSessionDoc()
+  const now = Date.now()
+  const heartbeatAge = doc.workerAt ? now - doc.workerAt : null
+  const workerAlive = heartbeatAge !== null && heartbeatAge < 45_000
+  return {
+    ...doc,
+    online: doc.status === 'open' && workerAlive,
+    workerAlive,
+    heartbeatAge,
+  }
+}
+
+export async function countUnread(): Promise<number> {
+  const database = await db()
+  const rows = await database
+    .collection<ChatDoc>(COLLECTIONS.chats)
+    .aggregate<{ total: number }>([
+      { $match: { unread: { $gt: 0 }, archived: { $ne: true } } },
+      { $group: { _id: null, total: { $sum: '$unread' } } },
+    ])
+    .toArray()
+  return rows[0]?.total || 0
+}
+
+export async function listChats(opts: { filter?: string; q?: string; limit?: number } = {}): Promise<ChatSummary[]> {
+  const database = await db()
+  const { filter = 'all', q = '', limit = 200 } = opts
+  const query: Record<string, unknown> = {}
+  if (filter === 'unread') query.unread = { $gt: 0 }
+  if (filter === 'groups') query.isGroup = true
+  if (filter === 'archived') query.archived = true
+  else query.archived = { $ne: true }
+
+  if (q.trim()) {
+    const rx = new RegExp(q.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i')
+    query.$or = [{ name: rx }, { lastText: rx }, { _id: rx }]
+  }
+
+  const docs = await database
+    .collection<ChatDoc>(COLLECTIONS.chats)
+    .find(query)
+    .sort({ lastTs: -1, updatedAt: -1 })
+    .limit(Math.min(limit, 300))
+    .toArray()
+
+  return docs.map((c) => ({
+    jid: c._id,
+    name: c.name || jidToPhone(c._id) || c._id,
+    isGroup: Boolean(c.isGroup),
+    unread: c.unread || 0,
+    lastTs: c.lastTs || 0,
+    lastText: c.lastText || '',
+    lastFromMe: Boolean(c.lastFromMe),
+    lastType: c.lastType || 'chat',
+    pinned: c.pinned || 0,
+    archived: Boolean(c.archived),
+  }))
+}
+
+export async function getChat(jid: string): Promise<ChatSummary | null> {
+  const database = await db()
+  const c = await database.collection<ChatDoc>(COLLECTIONS.chats).findOne({ _id: jid })
+  if (!c) return null
+  return {
+    jid: c._id,
+    name: c.name || jidToPhone(c._id) || c._id,
+    isGroup: Boolean(c.isGroup),
+    unread: c.unread || 0,
+    lastTs: c.lastTs || 0,
+    lastText: c.lastText || '',
+    lastFromMe: Boolean(c.lastFromMe),
+    lastType: c.lastType || 'chat',
+    pinned: c.pinned || 0,
+    archived: Boolean(c.archived),
+  }
+}
+
+export async function listMessages(
+  jid: string,
+  opts: { before?: number; limit?: number } = {},
+): Promise<{ messages: MessageDoc[]; hasMore: boolean }> {
+  const database = await db()
+  const limit = Math.min(opts.limit || 40, 100)
+  const query: Record<string, unknown> = { jid }
+  if (opts.before) query.ts = { $lt: opts.before }
+  const docs = await database
+    .collection<MessageDoc>(COLLECTIONS.messages)
+    .find(query)
+    .sort({ ts: -1 })
+    .limit(limit + 1)
+    .toArray()
+  const hasMore = docs.length > limit
+  const messages = docs.slice(0, limit).reverse()
+  return { messages, hasMore }
+}
+
+export async function enqueueCommand(type: CommandType, payload: Record<string, unknown> = {}) {
+  const database = await db()
+  const now = Date.now()
+  const doc: Omit<CommandDoc, '_id'> = { type, payload, status: 'pending', createdAt: now, updatedAt: now }
+  const res = await database.collection<CommandDoc>(COLLECTIONS.commands).insertOne(doc)
+  return String(res.insertedId)
+}
+
+export async function waitForCommand(id: string, timeoutMs = 12_000) {
+  const database = await db()
+  const started = Date.now()
+  let command: CommandDoc | null = null
+  while (Date.now() - started < timeoutMs) {
+    command = await database
+      .collection<CommandDoc>(COLLECTIONS.commands)
+      .findOne({ _id: new ObjectId(id) })
+    if (command && (command.status === 'done' || command.status === 'error')) return command
+    await new Promise((r) => setTimeout(r, 220))
+  }
+  return command
+}
+
+export async function mediaExists(msgId: string) {
+  const database = await db()
+  return (database.collection(COLLECTIONS.media) as Collection<any>).findOne(
+    { _id: msgId },
+    { projection: { mimetype: 1, size: 1 } },
+  )
+}
+
+export async function getMediaDoc(msgId: string) {
+  const database = await db()
+  return (database.collection(COLLECTIONS.media) as Collection<any>).findOne(
+    { _id: msgId },
+    { projection: { mimetype: 1, data: 1, size: 1, kind: 1 } },
+  )
+}
+
+export async function getUploadDoc(id: string) {
+  const database = await db()
+  if (!ObjectId.isValid(id)) return null
+  return database.collection(COLLECTIONS.uploads).findOne({ _id: new ObjectId(id) })
+}
+
+export async function addContactName(jid: string, name: string) {
+  const database = await db()
+  await (database.collection(COLLECTIONS.contacts) as Collection<any>).updateOne(
+    { _id: jid },
+    { $set: { name, updatedAt: Date.now() } },
+    { upsert: true },
+  )
+}
