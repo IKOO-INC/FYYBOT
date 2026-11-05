@@ -543,3 +543,40 @@ berhenti total saat sesi memang sudah ditolak.
   otomatis saat daftar digulir ke atas. Batas jumlah pesan histori per chat dinaikkan ke
   `WA_HISTORY_LIMIT=120`. Catatan: WhatsApp hanya mengirim jendela histori terbatas saat
   sinkronisasi pertama — pesan yang lebih lama dari itu tidak tersedia untuk diambil ulang.
+
+---
+
+## Snapshot JSON per chat (`data/chats/`)
+
+Membuka chat butuh data, dan mengambil **semua** pesan setiap kali jelas boros.
+Karena itu ada dua lapis:
+
+1. **Panel membaca per halaman + delta.** Halaman pertama 40 pesan terakhir; setelah itu
+   polling memakai `GET /api/messages?jid=…&after=<ts>` sehingga yang diangkut hanya
+   pesan baru (biasanya 0–2), bukan 40 pesan penuh. Gulir ke atas memuat halaman
+   sebelumnya (40 lagi) sesuai kebutuhan.
+2. **Worker menulis snapshot JSON** untuk tiap chat yang menerima pesan baru:
+
+```
+data/chats/6281234567890@s.whatsapp.net.json
+data/chats/1203630xxxxxxxx@g.us.json
+```
+
+Isi: `{ jid, name, isGroup, updatedAt, count, messages: [...] }` — maksimal
+`WA_CHAT_JSON_LIMIT` (default 200) pesan terakhir per chat, tanpa field `raw` dan tanpa
+isi media (media tetap di koleksi `wa_media`). Penulisan dilakukan 2 detik setelah pesan
+terakhir (di-debounce, atomik lewat `.tmp` + rename), jadi tidak membebani disk.
+
+Ekspor/backup seluruh riwayat kapan saja:
+
+```powershell
+npm run chats:export                  # → data/chats/*.json + data/chats/index.json
+npm run chats:export -- --limit 200   # lebih ringkas
+npm run chats:export -- --out D:\arsip-fyy
+```
+
+Catatan penting: file JSON ini hidup di PC tempat worker berjalan. Panel di Vercel
+**tidak** bisa membaca file lokal, jadi sumber data panel tetap MongoDB — kecepatan
+buka chat datang dari paginasi + delta polling, bukan dari file JSON. Snapshot berguna
+untuk arsip, pindah server, atau dibuka dengan editor/script apa pun tanpa MongoDB.
+Matikan dengan `WA_CHAT_JSON=false`.

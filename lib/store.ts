@@ -257,9 +257,22 @@ export async function getChat(jid: string): Promise<ChatSummary | null> {
 
 export async function listMessages(
   jid: string,
-  opts: { before?: number; limit?: number } = {},
+  opts: { before?: number; after?: number; limit?: number } = {},
 ): Promise<{ messages: MessageDoc[]; hasMore: boolean }> {
   const database = await db()
+
+  // Mode "delta": hanya pesan yang lebih baru dari `after` (untuk polling
+  // ringan — tidak perlu mengangkut ulang 40 pesan setiap 2 detik).
+  if (opts.after) {
+    const docs = await database
+      .collection<MessageDoc>(COLLECTIONS.messages)
+      .find({ jid, ts: { $gt: opts.after } })
+      .sort({ ts: 1 })
+      .limit(Math.min(opts.limit || 100, 200))
+      .toArray()
+    return { messages: docs, hasMore: false }
+  }
+
   const limit = Math.min(opts.limit || 40, 100)
   const query: Record<string, unknown> = { jid }
   if (opts.before) query.ts = { $lt: opts.before }

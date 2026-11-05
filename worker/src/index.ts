@@ -13,6 +13,8 @@ import makeWASocket, {
 import type { Boom } from '@hapi/boom'
 import pino from 'pino'
 import os from 'node:os'
+import path from 'node:path'
+import { promises as fsp } from 'node:fs'
 import QRCode from 'qrcode'
 import { ObjectId, type Collection, type Db, type Document } from 'mongodb'
 import { config, assertConfig } from './config'
@@ -297,6 +299,53 @@ async function cachedGroupMetadata(jid: string) {
   }
 }
 
+/* ------------------------------------------------------------------ */
+/* Snapshot JSON per chat (data/chats/<jid>.json)                      */
+/* ------------------------------------------------------------------ */
+
+const chatSnapshotTimers = new Map<string, NodeJS.Timeout>()
+
+function scheduleChatSnapshot(jid: string) {
+  if (!config.chatJson) return
+  const existing = chatSnapshotTimers.get(jid)
+  if (existing) clearTimeout(existing)
+  const timer = setTimeout(() => {
+    chatSnapshotTimers.delete(jid)
+    void writeChatSnapshot(jid).catch((err) => logger.debug({ err }, 'snapshot chat gagal'))
+  }, 2000)
+  timer.unref?.()
+  chatSnapshotTimers.set(jid, timer)
+}
+
+/**
+ * Tulis N pesan terakhir sebuah chat ke satu file JSON.
+ * Tujuan: arsip/backup murah di PC + bahan ekspor. Panel yang jalan di Vercel
+ * tetap membaca MongoDB (file lokal PC tidak bisa diakses dari internet).
+ */
+async function writeChatSnapshot(jid: string) {
+  if (!config.chatJson) return
+  const { messages, chats } = await collections()
+  const docs = await messages
+    .find({ jid }, { projection: { raw: 0 } })
+    .sort({ ts: -1 })
+    .limit(Math.max(10, config.chatJsonLimit))
+    .toArray()
+  const chat = await chats.findOne({ _id: jid }, { projection: { name: 1, isGroup: 1 } })
+  const payload = {
+    jid,
+    name: chat?.name || null,
+    isGroup: Boolean(chat?.isGroup),
+    updatedAt: Date.now(),
+    count: docs.length,
+    messages: docs.reverse(),
+  }
+  await fsp.mkdir(config.chatJsonDir, { recursive: true })
+  const file = path.join(config.chatJsonDir, `${jid.replace(/[^a-zA-Z0-9@._-]/g, '_')}.json`)
+  const tmp = `${file}.tmp`
+  await fsp.writeFile(tmp, JSON.stringify(payload), 'utf8')
+  await fsp.rename(tmp, file)
+}
+
 /**
  * Pastikan chat punya nama yang manusiawi. Dipanggil saat ada pesan masuk:
  * grup memakai `groupMetadata.subject`, 1:1 memakai cache kontak.
@@ -465,6 +514,7 @@ async function storeMessage(message: WAMessage, opts: { notify?: boolean; histor
       incUnread: !fromMe && Boolean(opts.notify),
     })
     void ensureChatName(jid)
+    scheduleChatSnapshot(jid)
   }
 
   const freshEnough = !opts.history || Date.now() - ts < 2 * 24 * 60 * 60 * 1000

@@ -2,6 +2,10 @@ import 'dotenv/config'
 import os from 'node:os'
 import path from 'node:path'
 import fs from 'node:fs'
+import { fileURLToPath } from 'node:url'
+
+const workerSrcDir = path.dirname(fileURLToPath(import.meta.url))
+const repoRoot = path.resolve(workerSrcDir, '..', '..')
 
 function loadRootEnv() {
   // When running from ./worker, also allow the project root .env.local / .env
@@ -38,6 +42,11 @@ export const config = {
   // Batas pesan histori per chat saat sinkronisasi awal (WhatsApp hanya
   // mengirim jendela terbatas; makin besar makin lama proses sync pertama).
   historyMessageLimit: Number(process.env.WA_HISTORY_LIMIT || 120),
+  // Snapshot JSON per chat di PC (data/chats/<jid>.json) — backup/portable,
+  // dan bisa dijadikan arsip tanpa perlu MongoDB.
+  chatJson: (process.env.WA_CHAT_JSON || 'true') !== 'false',
+  chatJsonDir: process.env.WA_CHAT_JSON_DIR || path.join(repoRoot, 'data', 'chats'),
+  chatJsonLimit: Number(process.env.WA_CHAT_JSON_LIMIT || 200),
   logLevel: process.env.WA_LOG_LEVEL || 'warn',
   // QR lifetime, mengikuti default Baileys 6.7 (lib/Socket/socket.js):
   // QR pertama hidup 60 detik, QR berikutnya 20 detik.

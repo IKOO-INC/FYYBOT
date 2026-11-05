@@ -39,3 +39,6 @@ coverage/
 .vscode/*
 !.vscode/extensions.json
 !.vscode/tasks.json
+
+# snapshot JSON chat (dibuat worker / npm run chats:export)
+/data/
