@@ -1,0 +1,34 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Setup: install semua dependency",
+      "type": "shell",
+      "command": "npm install --no-audit --no-fund && npm --prefix worker install --no-audit --no-fund",
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "dedicated" }
+    },
+    {
+      "label": "Worker: start (Baileys, mode PC)",
+      "type": "shell",
+      "command": "npm --prefix worker start",
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true },
+      "group": { "kind": "build", "isDefault": true }
+    },
+    {
+      "label": "Worker: dev (auto reload)",
+      "type": "shell",
+      "command": "npm --prefix worker run dev",
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true }
+    },
+    {
+      "label": "Panel: dev (localhost:3000)",
+      "type": "shell",
+      "command": "npm run dev",
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true }
+    }
+  ]
+}
