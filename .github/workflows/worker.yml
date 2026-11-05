@@ -55,13 +55,16 @@ jobs:
         working-directory: worker
         env:
           MONGODB_URI: ${{ secrets.MONGODB_URI }}
-          MONGODB_DB_NAME: ${{ vars.MONGODB_DB_NAME || 'fyywhatsapp' }}
-          WA_SESSION_ID: ${{ vars.WA_SESSION_ID || 'default' }}
-          WA_MAX_RUNTIME_MS: ${{ format('{0}', fromJSON(github.event.inputs.runtime_minutes || '55') * 60000) }}
+          MONGODB_DB_NAME: ${{ vars.MONGODB_DB_NAME }}
+          WA_SESSION_ID: ${{ vars.WA_SESSION_ID }}
+          RUNTIME_MINUTES: ${{ github.event.inputs.runtime_minutes || '55' }}
           WORKER_ID: gha-${{ github.run_id }}-${{ github.run_attempt }}
           WORKER_VERSION: '1.1.0'
           WA_LOG_LEVEL: info
-        run: npm start
+        run: |
+          export WA_MAX_RUNTIME_MS=$(( RUNTIME_MINUTES * 60000 ))
+          echo "Batas runtime worker: $RUNTIME_MINUTES menit"
+          npm start
 
       # Worker mati sesuai WA_MAX_RUNTIME_MS (exit 0). Langsung picu run
       # berikutnya supaya sambungan cuma putus ±1 menit. Kalau step di atas
