@@ -91,6 +91,7 @@ export type CommandType =
   | 'typing'
   | 'react'
   | 'download-media'
+  | 'avatar'
   | 'pair'
   | 'logout'
   | 'restart'

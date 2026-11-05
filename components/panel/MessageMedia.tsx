@@ -1,18 +1,39 @@
 'use client'
 
 import { useEffect, useRef, useState } from 'react'
-import { DownloadIcon, FileIcon, PauseIcon, PlayIcon, RefreshIcon, XIcon } from '@/components/icons'
+import {
+  DownloadIcon,
+  FileIcon,
+  ImageIcon,
+  MicIcon,
+  PauseIcon,
+  PlayIcon,
+  RefreshIcon,
+  StickerIcon,
+  VideoIcon,
+  XIcon,
+} from '@/components/icons'
 
 function mediaUrl(jid: string, id: string) {
   return `/api/messages/media?jid=${encodeURIComponent(jid)}&id=${encodeURIComponent(id)}`
 }
 
-export function useMediaBlob(jid: string, messageId: string) {
+/**
+ * Ambil media dari server. Default-nya **tidak** mengambil apa pun sampai
+ * `enabled` di-set true (klik user) — supaya membuka chat tidak memicu
+ * puluhan unduhan sekaligus dan worker tidak sibuk.
+ */
+export function useMediaBlob(jid: string, messageId: string, enabled = true) {
   const [url, setUrl] = useState<string | null>(null)
-  const [status, setStatus] = useState<'loading' | 'ready' | 'error'>('loading')
+  const [status, setStatus] = useState<'idle' | 'loading' | 'ready' | 'error'>(enabled ? 'loading' : 'idle')
   const [nonce, setNonce] = useState(0)
 
   useEffect(() => {
+    if (!enabled) {
+      setStatus('idle')
+      setUrl(null)
+      return
+    }
     let alive = true
     let attempt = 0
     let timer: number | undefined
@@ -52,9 +73,52 @@ export function useMediaBlob(jid: string, messageId: string) {
       if (timer) window.clearTimeout(timer)
       if (created) URL.revokeObjectURL(created)
     }
-  }, [jid, messageId, nonce])
+  }, [jid, messageId, nonce, enabled])
 
   return { url, status, retry: () => setNonce((value) => value + 1) }
+}
+
+export function LazyMediaButton({
+  kind,
+  meta,
+  onLoad,
+  compact = false,
+}: {
+  kind: 'image' | 'video' | 'audio' | 'sticker' | 'document'
+  meta?: string
+  onLoad: () => void
+  compact?: boolean
+}) {
+  const icon =
+    kind === 'image' ? (
+      <ImageIcon size={18} />
+    ) : kind === 'video' ? (
+      <VideoIcon size={18} />
+    ) : kind === 'audio' ? (
+      <MicIcon size={18} />
+    ) : kind === 'sticker' ? (
+      <StickerIcon size={18} />
+    ) : (
+      <FileIcon size={18} />
+    )
+  const label = kind === 'image' ? 'Foto' : kind === 'video' ? 'Video' : kind === 'audio' ? 'Pesan suara' : kind === 'sticker' ? 'Sticker' : 'Dokumen'
+
+  return (
+    <button
+      type="button"
+      onClick={onLoad}
+      className={`flex ${
+        compact ? 'h-24 w-24' : 'h-28 w-56'
+      } flex-col items-center justify-center gap-1.5 rounded-md bg-black/10 px-3 text-[11px] text-[var(--wa-text-soft)] transition hover:bg-black/15 dark:bg-white/10 dark:hover:bg-white/15`}
+    >
+      {icon}
+      <span className="font-medium text-[var(--wa-text)]">Ketuk untuk memuat</span>
+      <span className="text-center leading-tight">
+        {label}
+        {meta ? ` · ${meta}` : ''}
+      </span>
+    </button>
+  )
 }
 
 function Skeleton({ label = 'Mengunduh media…' }: { label?: string }) {
@@ -87,20 +151,25 @@ export function ImageBubble({
   caption,
   width,
   height,
+  size,
 }: {
   jid: string
   id: string
   caption?: string
   width?: number
   height?: number
+  size?: number
 }) {
-  const { url, status, retry } = useMediaBlob(jid, id)
+  const [load, setLoad] = useState(false)
+  const { url, status, retry } = useMediaBlob(jid, id, load)
   const [open, setOpen] = useState(false)
   const ratio = width && height ? width / height : 4 / 3
 
   return (
     <div>
-      {status === 'ready' && url ? (
+      {status === 'idle' ? (
+        <LazyMediaButton kind="image" meta={formatBytes(size)} onLoad={() => setLoad(true)} />
+      ) : status === 'ready' && url ? (
         <button type="button" onClick={() => setOpen(true)} className="block overflow-hidden rounded-md">
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
@@ -138,8 +207,12 @@ export function ImageBubble({
   )
 }
 
-export function StickerBubble({ jid, id }: { jid: string; id: string }) {
-  const { url, status, retry } = useMediaBlob(jid, id)
+export function StickerBubble({ jid, id, size }: { jid: string; id: string; size?: number }) {
+  const [load, setLoad] = useState(false)
+  const { url, status, retry } = useMediaBlob(jid, id, load)
+  if (status === 'idle') {
+    return <LazyMediaButton kind="sticker" meta={formatBytes(size)} onLoad={() => setLoad(true)} compact />
+  }
   if (status === 'ready' && url) {
     // eslint-disable-next-line @next/next/no-img-element
     return <img src={url} alt="Sticker" className="h-32 w-32 object-contain" />
@@ -153,16 +226,25 @@ export function VideoBubble({
   id,
   caption,
   seconds,
+  size,
 }: {
   jid: string
   id: string
   caption?: string
   seconds?: number
+  size?: number
 }) {
-  const { url, status, retry } = useMediaBlob(jid, id)
+  const [load, setLoad] = useState(false)
+  const { url, status, retry } = useMediaBlob(jid, id, load)
   return (
     <div>
-      {status === 'ready' && url ? (
+      {status === 'idle' ? (
+        <LazyMediaButton
+          kind="video"
+          meta={[seconds ? formatDuration(seconds) : '', formatBytes(size)].filter(Boolean).join(' · ')}
+          onLoad={() => setLoad(true)}
+        />
+      ) : status === 'ready' && url ? (
         <video src={url} controls playsInline className="max-h-80 w-full max-w-md rounded-md bg-black" />
       ) : status === 'error' ? (
         <Failed retry={retry} label="Video tidak tersedia · coba lagi" />
@@ -183,14 +265,17 @@ export function AudioBubble({
   seconds,
   isPtt,
   fromMe,
+  size,
 }: {
   jid: string
   id: string
   seconds?: number
   isPtt?: boolean
   fromMe?: boolean
+  size?: number
 }) {
-  const { url, status, retry } = useMediaBlob(jid, id)
+  const [load, setLoad] = useState(false)
+  const { url, status, retry } = useMediaBlob(jid, id, load)
   const audioRef = useRef<HTMLAudioElement | null>(null)
   const [playing, setPlaying] = useState(false)
   const [progress, setProgress] = useState(0)
@@ -212,6 +297,15 @@ export function AudioBubble({
     }
   }
 
+  if (status === 'idle') {
+    return (
+      <LazyMediaButton
+        kind="audio"
+        meta={[formatDuration(seconds), formatBytes(size)].filter(Boolean).join(' · ')}
+        onLoad={() => setLoad(true)}
+      />
+    )
+  }
   if (status === 'loading') return <Skeleton label={isPtt ? 'Mengunduh pesan suara…' : 'Mengunduh audio…'} />
   if (status === 'error' || !url) return <Failed retry={retry} label="Audio tidak tersedia" />
 
@@ -282,7 +376,8 @@ export function DocumentBubble({
   size?: number
   caption?: string
 }) {
-  const { url, status, retry } = useMediaBlob(jid, id)
+  const [load, setLoad] = useState(false)
+  const { url, status, retry } = useMediaBlob(jid, id, load)
 
   function download() {
     if (!url) return
@@ -307,7 +402,17 @@ export function DocumentBubble({
             {size ? ` · ${formatBytes(size)}` : ''}
           </p>
         </div>
-        {status === 'ready' ? (
+        {status === 'idle' ? (
+          <button
+            type="button"
+            onClick={() => setLoad(true)}
+            className="flex h-8 w-8 items-center justify-center rounded-full text-[var(--wa-text-soft)] hover:bg-black/10"
+            aria-label="Muat dokumen"
+            title="Ketuk untuk mengunduh"
+          >
+            <DownloadIcon size={16} />
+          </button>
+        ) : status === 'ready' ? (
           <button
             type="button"
             onClick={download}

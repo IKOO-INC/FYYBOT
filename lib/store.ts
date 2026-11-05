@@ -92,6 +92,93 @@ export async function recordWorkerTrigger(result: { ok: boolean; error?: string 
   )
 }
 
+type ContactDoc = {
+  _id: string
+  name?: string | null
+  notify?: string | null
+  verifiedName?: string | null
+  avatar?: string | null
+  avatarMime?: string | null
+  avatarAt?: number | null
+  avatarRequestedAt?: number | null
+}
+
+const AVATAR_TTL_MS = 6 * 60 * 60_000
+const AVATAR_REQUEST_COOLDOWN_MS = 10 * 60_000
+const NAME_LOOKS_RAW = /^[\d\-+\s]+$/
+
+/** Nama kontak yang tersimpan worker, dipakai saat wa_chats belum punya nama. */
+async function contactNamesFor(jids: string[]): Promise<Map<string, string>> {
+  const map = new Map<string, string>()
+  if (!jids.length) return map
+  const database = await db()
+  const rows = await database
+    .collection<ContactDoc>(COLLECTIONS.contacts)
+    .find({ _id: { $in: jids } }, { projection: { name: 1, notify: 1, verifiedName: 1 } })
+    .toArray()
+  for (const row of rows) {
+    const name = row.name || row.notify || row.verifiedName
+    if (name && !NAME_LOOKS_RAW.test(name)) map.set(row._id, name)
+  }
+  return map
+}
+
+/** Foto profil (data URL) untuk daftar JID — hanya yang sudah tersimpan worker. */
+export async function getAvatars(jids: string[]): Promise<Record<string, string>> {
+  const unique = Array.from(new Set(jids.filter(Boolean))).slice(0, 80)
+  if (!unique.length) return {}
+  const database = await db()
+  const rows = await database
+    .collection<ContactDoc>(COLLECTIONS.contacts)
+    .find({ _id: { $in: unique }, avatar: { $type: 'string' } }, { projection: { avatar: 1, avatarMime: 1 } })
+    .toArray()
+  const out: Record<string, string> = {}
+  for (const row of rows) {
+    if (!row.avatar) continue
+    out[row._id] = `data:${row.avatarMime || 'image/jpeg'};base64,${row.avatar}`
+  }
+  return out
+}
+
+/**
+ * Minta worker mengambil foto profil yang belum ada / sudah kedaluwarsa.
+ * Ada cooldown supaya tidak menembak WhatsApp berulang untuk JID yang sama.
+ */
+export async function requestAvatars(jids: string[], max = 12): Promise<number> {
+  const unique = Array.from(new Set(jids.filter(Boolean))).slice(0, 80)
+  if (!unique.length) return 0
+  const database = await db()
+  const col = database.collection<ContactDoc>(COLLECTIONS.contacts)
+  const now = Date.now()
+  const stale = {
+    $or: [
+      { avatarAt: { $exists: false } },
+      { avatarAt: null },
+      { avatarAt: { $lt: now - AVATAR_TTL_MS } },
+    ],
+  }
+
+  const rows = await col
+    .find(
+      { _id: { $in: unique }, ...stale, $and: [{ $or: [{ avatarRequestedAt: { $exists: false } }, { avatarRequestedAt: null }, { avatarRequestedAt: { $lt: now - AVATAR_REQUEST_COOLDOWN_MS } }] }] },
+      { projection: { _id: 1 } },
+    )
+    .limit(max)
+    .toArray()
+
+  let queued = 0
+  for (const row of rows) {
+    const claimed = await col.updateOne(
+      { _id: row._id, ...stale },
+      { $set: { avatarRequestedAt: now } },
+    )
+    if (!claimed.modifiedCount) continue
+    await enqueueCommand('avatar', { jid: row._id })
+    queued += 1
+  }
+  return queued
+}
+
 export async function countUnread(): Promise<number> {
   const database = await db()
   const rows = await database
@@ -125,9 +212,17 @@ export async function listChats(opts: { filter?: string; q?: string; limit?: num
     .limit(Math.min(limit, 300))
     .toArray()
 
-  return docs.map((c) => ({
+  const needName = docs
+    .filter((c) => !c.name || NAME_LOOKS_RAW.test(c.name) || /@/.test(c.name))
+    .map((c) => c._id)
+  const names = await contactNamesFor(needName)
+
+  return docs.map((c) => {
+    const fallback = c.name && !NAME_LOOKS_RAW.test(c.name) ? c.name : null
+    const resolved = fallback || names.get(c._id) || jidToPhone(c._id) || c._id
+    return {
     jid: c._id,
-    name: c.name || jidToPhone(c._id) || c._id,
+    name: resolved,
     isGroup: Boolean(c.isGroup),
     unread: c.unread || 0,
     lastTs: c.lastTs || 0,
@@ -136,16 +231,19 @@ export async function listChats(opts: { filter?: string; q?: string; limit?: num
     lastType: c.lastType || 'chat',
     pinned: c.pinned || 0,
     archived: Boolean(c.archived),
-  }))
+    }
+  })
 }
 
 export async function getChat(jid: string): Promise<ChatSummary | null> {
   const database = await db()
   const c = await database.collection<ChatDoc>(COLLECTIONS.chats).findOne({ _id: jid })
   if (!c) return null
+  const usable = c.name && !NAME_LOOKS_RAW.test(c.name) ? c.name : null
+  const fromContact = usable ? null : (await contactNamesFor([jid])).get(jid) || null
   return {
     jid: c._id,
-    name: c.name || jidToPhone(c._id) || c._id,
+    name: usable || fromContact || jidToPhone(c._id) || c._id,
     isGroup: Boolean(c.isGroup),
     unread: c.unread || 0,
     lastTs: c.lastTs || 0,

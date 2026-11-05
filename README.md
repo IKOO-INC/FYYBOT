@@ -165,9 +165,9 @@ masuk ke antrean `wa_commands`, dieksekusi worker dalam ≈1 detik.
 | `CRON_SECRET` | Panel | tidak | — (untuk `/api/cron/worker`) |
 | `WA_SESSION_ID` | Worker | tidak | `default` |
 | `WA_SYNC_FULL_HISTORY` | Worker | tidak | `true` |
-| `WA_AUTO_MEDIA` | Worker | tidak | `true` |
+| `WA_AUTO_MEDIA` | Worker | tidak | `false` (media diunduh saat diklik) |
 | `WA_MAX_MEDIA_MB` | Worker | tidak | `8` |
-| `WA_HISTORY_LIMIT` | Worker | tidak | `60` |
+| `WA_HISTORY_LIMIT` | Worker | tidak | `120` |
 | `WA_TERMINAL_QR` | Worker | tidak | aktif di terminal interaktif |
 | `WA_LOG_LEVEL` | Worker | tidak | `warn` |
 | `WA_QR_TTL_FIRST_MS` | Worker | tidak | `60000` (sama dengan Baileys) |
@@ -439,6 +439,7 @@ memerlukan cookie sesi admin.
 | `POST /api/messages/send` | `{ jid, text }` → antre kirim |
 | `POST /api/messages/media` | `multipart/form-data`: `jid`, `file`, `caption` |
 | `GET /api/messages/media?jid=&id=` | ambil media (202 = sedang diunduh worker) |
+| `GET /api/avatars?jids=a,b,c` | foto profil kontak/grup (data URL) + minta worker mengambil yang belum ada |
 | `POST /api/messages/react` | `{ jid, messageId, emoji, fromMe }` |
 | `GET /api/health` | ping MongoDB + konfigurasi |
 
@@ -520,3 +521,25 @@ Sesi WhatsApp (creds + Signal keys) disimpan di `wa_auth` dan ditulis dengan hat
 
 Ringkasnya: satu worker, shutdown yang menunggu state tersimpan, retry yang sabar, dan
 berhenti total saat sesi memang sudah ditolak.
+
+---
+
+## Nama, foto profil, dan media (hemat kuota)
+
+- **Nama chat:** panel memakai `wa_chats.name`; kalau kosong/masih berupa nomor, panel
+  mengambil nama dari `wa_contacts` (hasil `contacts.upsert/update` + `pushName`), lalu
+  fallback ke nomor yang diformat. Saat worker start, nama chat lama yang masih berupa
+  angka di-*backfill* dari `wa_contacts`; grup mengambil nama lewat `groupMetadata`
+  (maksimal sekali per 10 menit per grup).
+- **Foto profil:** disimpan worker di `wa_contacts.avatar` (base64, varian `preview`,
+  maks 400 KB, cache 6 jam). Panel meminta `/api/avatars?jids=…` untuk chat yang terlihat
+  saja; JID yang belum punya foto dipicu lewat perintah `avatar` dengan cooldown 10 menit.
+  Selama foto belum ada, panel menampilkan inisial seperti sebelumnya.
+- **Media tidak lagi diunduh otomatis.** `WA_AUTO_MEDIA` default `false`, dan setiap
+  bubble (foto/video/audio/sticker/dokumen) menampilkan tombol *“Ketuk untuk memuat”*
+  beserta jenis + ukuran. Baru setelah diklik panel memanggil `/api/messages/media`,
+  worker mengunduh satu pesan itu, lalu hasilnya di-cache 7 hari di browser.
+- **Pesan lama:** tombol *“Muat pesan sebelumnya”* tetap ada dan sekarang juga terpicu
+  otomatis saat daftar digulir ke atas. Batas jumlah pesan histori per chat dinaikkan ke
+  `WA_HISTORY_LIMIT=120`. Catatan: WhatsApp hanya mengirim jendela histori terbatas saat
+  sinkronisasi pertama — pesan yang lebih lama dari itu tidak tersedia untuk diambil ulang.

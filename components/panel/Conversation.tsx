@@ -132,7 +132,10 @@ export default function Conversation({
     const distance = element.scrollHeight - element.scrollTop - element.clientHeight
     stickToBottom.current = distance < 120
     setShowScrollDown(distance > 400)
-  }, [])
+    // Muat pesan lama otomatis saat pengguna menggulir ke atas.
+    if (element.scrollTop < 80 && data?.hasMore && !loadingOlder) void loadOlder()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data?.hasMore, loadingOlder])
 
   async function loadOlder() {
     const first = merged[0]
@@ -235,6 +238,32 @@ export default function Conversation({
 
   const title = chat?.name || prettyPhone(jid)
 
+  // Foto profil chat yang sedang dibuka (diambil sekali, lalu di-cache 6 jam di worker).
+  const [avatar, setAvatar] = useState<string | null>(null)
+  useEffect(() => {
+    let alive = true
+    const load = async () => {
+      try {
+        const res = await fetch(`/api/avatars?jids=${encodeURIComponent(jid)}`, { cache: 'no-store' })
+        if (!res.ok) return
+        const json = (await res.json()) as { avatars?: Record<string, string> }
+        if (!alive) return
+        setAvatar(json.avatars?.[jid] || null)
+      } catch {
+        /* opsional */
+      }
+    }
+    setAvatar(null)
+    void load()
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === 'visible') void load()
+    }, 120_000)
+    return () => {
+      alive = false
+      window.clearInterval(timer)
+    }
+  }, [jid])
+
   return (
     <section className="relative flex min-w-0 flex-1 flex-col bg-[var(--wa-pane)]">
       {/* Header */}
@@ -242,7 +271,7 @@ export default function Conversation({
         <button type="button" onClick={onBack} className="wa-icon-btn -ml-1 lg:hidden" aria-label="Kembali">
           <ArrowLeft size={20} />
         </button>
-        <Avatar name={title} seed={jid} size={40} online={false} />
+        <Avatar name={title} seed={jid} size={40} online={false} src={avatar} />
         <div className="min-w-0 flex-1 leading-tight">
           <p className="truncate text-[14.5px] font-medium">{title}</p>
           <p className="truncate text-[11.5px] text-[var(--wa-text-soft)]">
@@ -478,7 +507,7 @@ export default function Conversation({
               <h2 className="text-[14px] font-medium">Info percakapan</h2>
             </div>
             <div className="flex flex-col items-center gap-3 border-b border-[var(--wa-border)] bg-[var(--wa-pane)] py-7">
-              <Avatar name={title} seed={jid} size={112} />
+              <Avatar name={title} seed={jid} size={112} src={avatar} />
               <div className="text-center">
                 <p className="text-[16px] font-medium">{title}</p>
                 <p className="text-[12px] text-[var(--wa-text-soft)]">{chat?.isGroup ? 'Grup' : prettyPhone(jid)}</p>

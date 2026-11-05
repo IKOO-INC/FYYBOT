@@ -52,6 +52,7 @@ let authRejectAt: number[] = []
 const AUTH_REJECT_WINDOW_MS = 10 * 60_000
 
 const contactNames = new Map<string, string>()
+const chatNameCheckedAt = new Map<string, number>()
 const groupCache = new Map<string, { data: GroupMetadata; ts: number }>()
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
@@ -296,6 +297,36 @@ async function cachedGroupMetadata(jid: string) {
   }
 }
 
+/**
+ * Pastikan chat punya nama yang manusiawi. Dipanggil saat ada pesan masuk:
+ * grup memakai `groupMetadata.subject`, 1:1 memakai cache kontak.
+ * Dibatasi 1 percobaan / 10 menit per chat supaya tidak membanjiri WhatsApp.
+ */
+async function ensureChatName(jid: string) {
+  const last = chatNameCheckedAt.get(jid) || 0
+  if (Date.now() - last < 10 * 60_000) return
+  chatNameCheckedAt.set(jid, Date.now())
+  try {
+    const { chats } = await collections()
+    const doc = await chats.findOne({ _id: jid }, { projection: { name: 1 } })
+    const current = typeof doc?.name === 'string' ? doc.name : ''
+    if (current && !/^\d+$/.test(current)) return
+    if (isJidGroup(jid)) {
+      if (!sock) return
+      const meta = await sock.groupMetadata(jid).catch(() => null)
+      if (meta?.subject) {
+        await chats.updateOne({ _id: jid }, { $set: { name: meta.subject, isGroup: true } })
+        log(`nama grup diperbarui: ${meta.subject}`)
+      }
+      return
+    }
+    const name = contactNames.get(jid)
+    if (name) await chats.updateOne({ _id: jid }, { $set: { name } })
+  } catch (err) {
+    logger.debug({ err }, 'ensureChatName failed')
+  }
+}
+
 /* ------------------------------------------------------------------ */
 /* Media                                                               */
 /* ------------------------------------------------------------------ */
@@ -433,6 +464,7 @@ async function storeMessage(message: WAMessage, opts: { notify?: boolean; histor
       name: !isGroup ? contactNames.get(jid) || undefined : undefined,
       incUnread: !fromMe && Boolean(opts.notify),
     })
+    void ensureChatName(jid)
   }
 
   const freshEnough = !opts.history || Date.now() - ts < 2 * 24 * 60 * 60 * 1000
@@ -664,6 +696,35 @@ async function executeCommand(command: Document) {
 
     case 'download-media':
       return downloadMediaOnDemand({ jid: payload.jid, messageId: payload.messageId })
+
+    case 'avatar': {
+      const active = await waitForSocket(8000)
+      const target = String(payload.jid || '')
+      if (!target) throw new Error('jid wajib diisi')
+      const { contacts } = await collections()
+      // 'preview' jauh lebih kecil (cocok untuk daftar chat); fallback ke 'image'.
+      const url =
+        (await active.profilePictureUrl(target, 'preview').catch(() => null)) ||
+        (await active.profilePictureUrl(target, 'image').catch(() => null))
+      if (!url) {
+        await contacts.updateOne({ _id: target }, { $set: { avatar: null, avatarAt: Date.now() } }, { upsert: true })
+        return { ok: true, empty: true }
+      }
+      const res = await fetch(url)
+      if (!res.ok) throw new Error(`Gagal mengambil foto profil (${res.status})`)
+      const buffer = Buffer.from(await res.arrayBuffer())
+      if (buffer.length > 400 * 1024) throw new Error('Foto profil terlalu besar')
+      const mimetype = res.headers.get('content-type') || 'image/jpeg'
+      await contacts.updateOne(
+        { _id: target },
+        {
+          $set: { avatar: buffer.toString('base64'), avatarMime: mimetype, avatarAt: Date.now() },
+          $unset: { avatarRequestedAt: '' },
+        },
+        { upsert: true },
+      )
+      return { ok: true, size: buffer.length, mimetype }
+    }
 
     case 'pair': {
       // Pastikan socket memang sedang berjalan; kalau worker sempat menyerah,
@@ -1191,6 +1252,29 @@ async function bootstrap() {
     if (typeof contact._id === 'string' && typeof contact.name === 'string') {
       contactNames.set(contact._id, contact.name)
     }
+  }
+
+  // Backfill nama chat lama yang masih berupa nomor, memakai wa_contacts.
+  try {
+    const { chats } = await collections()
+    const ops = contacts
+      .filter((contact) => typeof contact._id === 'string' && typeof contact.name === 'string')
+      .slice(0, 500)
+      .map((contact) => ({
+        updateOne: {
+          filter: {
+            _id: contact._id,
+            $or: [{ name: { $exists: false } }, { name: null }, { name: '' }, { name: /^\d+$/ }],
+          },
+          update: { $set: { name: contact.name } },
+        },
+      }))
+    if (ops.length) {
+      const result = await chats.bulkWrite(ops as never[], { ordered: false }).catch(() => null)
+      if (result?.modifiedCount) log(`nama ${result.modifiedCount} chat diperbarui dari kontak`)
+    }
+  } catch (err) {
+    logger.debug({ err }, 'backfill chat names failed')
   }
 
   await writeStatus({

@@ -32,8 +32,12 @@ export const config = {
   workerId: process.env.WORKER_ID || `${os.hostname()}-${process.pid}`,
   syncFullHistory: (process.env.WA_SYNC_FULL_HISTORY || 'true') !== 'false',
   maxMediaBytes: Number(process.env.WA_MAX_MEDIA_MB || 8) * 1024 * 1024,
-  autoDownloadMedia: (process.env.WA_AUTO_MEDIA || 'true') !== 'false',
-  historyMessageLimit: Number(process.env.WA_HISTORY_LIMIT || 60),
+  // Default MATI: media hanya diunduh saat panel memintanya (klik user),
+  // supaya membuka chat tidak memicu puluhan unduhan ke WhatsApp/MongoDB.
+  autoDownloadMedia: (process.env.WA_AUTO_MEDIA || 'false') === 'true',
+  // Batas pesan histori per chat saat sinkronisasi awal (WhatsApp hanya
+  // mengirim jendela terbatas; makin besar makin lama proses sync pertama).
+  historyMessageLimit: Number(process.env.WA_HISTORY_LIMIT || 120),
   logLevel: process.env.WA_LOG_LEVEL || 'warn',
   // QR lifetime, mengikuti default Baileys 6.7 (lib/Socket/socket.js):
   // QR pertama hidup 60 detik, QR berikutnya 20 detik.

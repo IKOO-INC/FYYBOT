@@ -75,6 +75,7 @@ export default function Inbox() {
   const [query, setQuery] = useState('')
   const [debounced, setDebounced] = useState('')
   const [showMenu, setShowMenu] = useState(false)
+  const [avatars, setAvatars] = useState<Record<string, string>>({})
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search)
@@ -122,6 +123,32 @@ export default function Inbox() {
     },
     [setData],
   )
+
+  // Foto profil: diambil bertahap untuk chat yang terlihat saja.
+  useEffect(() => {
+    const jids = chats.slice(0, 40).map((chat) => chat.jid)
+    if (!jids.length) return
+    let alive = true
+    const load = async () => {
+      try {
+        const res = await fetch(`/api/avatars?jids=${encodeURIComponent(jids.join(','))}`, { cache: 'no-store' })
+        if (!res.ok) return
+        const json = (await res.json()) as { avatars?: Record<string, string> }
+        if (!alive || !json.avatars) return
+        setAvatars((current) => ({ ...current, ...json.avatars }))
+      } catch {
+        /* diamkan: foto profil bersifat opsional */
+      }
+    }
+    void load()
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === 'visible') void load()
+    }, 60_000)
+    return () => {
+      alive = false
+      window.clearInterval(timer)
+    }
+  }, [chats])
 
   const session = sessionData?.session
   const me = session?.me || data?.me || null
@@ -259,7 +286,7 @@ export default function Inbox() {
                     active ? 'wa-active' : 'hover:bg-[var(--wa-hover)]'
                   }`}
                 >
-                  <Avatar name={chat.name} seed={chat.jid} size={49} />
+                  <Avatar name={chat.name} seed={chat.jid} size={49} src={avatars[chat.jid]} />
                   <div className="min-w-0 flex-1 border-b border-[var(--wa-border)] pb-2.5 -mb-2.5">
                     <div className="flex items-center justify-between gap-2">
                       <p className="flex min-w-0 items-center gap-1.5 truncate text-[14px]">
