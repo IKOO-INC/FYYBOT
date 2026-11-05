@@ -1,6 +1,6 @@
 {
   "name": "fyywhatsapp-worker",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": true,
   "type": "module",
   "description": "Baileys worker for FYY WhatsApp Admin \u2014 keeps the WhatsApp link alive and bridges it to MongoDB",

@@ -41,6 +41,18 @@ export const config = {
   qrTtlFirstMs: Number(process.env.WA_QR_TTL_FIRST_MS || 60_000),
   qrTtlNextMs: Number(process.env.WA_QR_TTL_NEXT_MS || 20_000),
   qrSweepMs: Number(process.env.WA_QR_SWEEP_MS || 4000),
+  // Masa berlaku pairing code (WhatsApp menolak kode lama).
+  pairingTtlMs: Number(process.env.WA_PAIRING_TTL_MS || 120_000),
+  // Satu DB boleh dipakai beberapa host; lock mencegah dua worker memegang
+  // sesi yang sama (mis. GitHub Actions + laptop menyala bersamaan).
+  disableLock: (process.env.WA_DISABLE_LOCK || 'false') === 'true',
+  lockTtlMs: Number(process.env.WA_LOCK_TTL_MS || 90_000),
+  lockWaitMs: Number(process.env.WA_LOCK_WAIT_MS || 300_000),
+  // Batas umur proses (0 = tanpa batas). Dipakai GitHub Actions yang
+  // maksimal 6 jam per job: worker menutup diri lebih dulu supaya job
+  // berikutnya bisa mengambil alih tanpa tumpang tindih.
+  maxRuntimeMs: Number(process.env.WA_MAX_RUNTIME_MS || 0),
+  version: process.env.WORKER_VERSION || '1.1.0',
 }
 
 export function assertConfig() {

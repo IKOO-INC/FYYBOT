@@ -36,6 +36,14 @@ export async function GET() {
     const qrExpiresIn = fresh && expiresAt ? Math.max(0, Math.ceil((expiresAt - now) / 1000)) : null
     const qrTtl = fresh && expiresAt && issuedAt ? Math.max(1, Math.round((expiresAt - issuedAt) / 1000)) : null
 
+    const rawPairing = session.pairingCode || null
+    const pairingIssuedAt = session.pairingAt || null
+    const pairingExpiresAt =
+      session.pairingExpiresAt || (pairingIssuedAt ? pairingIssuedAt + 120_000 : null)
+    const pairingFresh = Boolean(rawPairing) && (pairingExpiresAt ? pairingExpiresAt > now : true)
+    const pairingExpiresIn =
+      pairingFresh && pairingExpiresAt ? Math.max(0, Math.ceil((pairingExpiresAt - now) / 1000)) : null
+
     return NextResponse.json(
       {
         ok: true,
@@ -46,8 +54,13 @@ export async function GET() {
           heartbeatAge: session.heartbeatAge,
           me: session.me || null,
           lastError: session.lastError || null,
-          pairingCode: session.pairingCode || null,
+          pairingCode: pairingFresh ? rawPairing : null,
           pairingPhone: session.pairingPhone || null,
+          pairingAt: pairingFresh ? pairingIssuedAt : null,
+          pairingExpiresAt: pairingFresh ? pairingExpiresAt : null,
+          pairingExpiresIn: pairingExpiresIn,
+          workerId: session.workerId || null,
+          workerVersion: session.workerVersion || null,
           connectedAt: session.connectedAt || null,
           startedAt: session.startedAt || null,
           qr: qrDataUrl,

@@ -11,6 +11,8 @@ export interface SessionDoc {
   qrSeq?: number
   pairingCode?: string | null
   pairingPhone?: string | null
+  pairingAt?: number | null
+  pairingExpiresAt?: number | null
   me?: {
     id?: string | null
     lid?: string | null
@@ -20,6 +22,7 @@ export interface SessionDoc {
   } | null
   lastError?: string | null
   workerId?: string | null
+  workerVersion?: string | null
   workerAt?: number | null
   startedAt?: number | null
   connectedAt?: number | null

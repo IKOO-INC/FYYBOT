@@ -12,6 +12,7 @@ import makeWASocket, {
 } from '@whiskeysockets/baileys'
 import type { Boom } from '@hapi/boom'
 import pino from 'pino'
+import os from 'node:os'
 import { ObjectId, type Collection, type Db, type Document } from 'mongodb'
 import { config, assertConfig } from './config'
 import { COL, closeDb, db, ensureIndexes } from './db'
@@ -40,6 +41,8 @@ let heartbeatTimer: NodeJS.Timeout | null = null
 let commandTimer: NodeJS.Timeout | null = null
 let commandsRunning = false
 let qrCount = 0
+const LOCK_ID = 'worker'
+let lockFailures = 0
 
 const contactNames = new Map<string, string>()
 const groupCache = new Map<string, { data: GroupMetadata; ts: number }>()
@@ -89,7 +92,12 @@ async function writeStatus(
 ) {
   const { session } = await collections()
   const update: Record<string, unknown> = {
-    $set: clean({ ...set, workerId: config.workerId, workerAt: Date.now() }),
+    $set: clean({
+      ...set,
+      workerId: config.workerId,
+      workerVersion: config.version,
+      workerAt: Date.now(),
+    }),
   }
   if (Object.keys(unset).length) update.$unset = unset
   if (Object.keys(inc).length) update.$inc = inc
@@ -102,16 +110,97 @@ async function writeStatus(
  * berikutnya). Kalau tidak ada QR baru sebelum kedaluwarsa, QR lama dibersihkan
  * agar panel tidak pernah menampilkan QR basi.
  */
-async function sweepExpiredQr() {
+async function sweepEphemeral() {
   try {
     const { session } = await collections()
+    const now = Date.now()
     await session.updateOne(
-      { _id: 'session', qr: { $type: 'string' }, qrExpiresAt: { $lt: Date.now() - 2500 } },
+      { _id: 'session', qr: { $type: 'string' }, qrExpiresAt: { $lt: now - 2500 } },
       { $unset: { qr: '', qrExpiresAt: '' } },
     )
+    await session.updateOne(
+      { _id: 'session', pairingCode: { $type: 'string' }, pairingExpiresAt: { $lt: now - 2000 } },
+      { $unset: { pairingCode: '', pairingAt: '', pairingExpiresAt: '' } },
+    )
   } catch (err) {
-    logger.debug({ err }, 'qr sweep failed')
+    logger.debug({ err }, 'ephemeral sweep failed')
   }
+}
+
+/* ------------------------------------------------------------------ */
+/* Single-worker lock (wa_locks)                                       */
+/* ------------------------------------------------------------------ */
+
+type LockDoc = {
+  _id: string
+  owner?: string
+  host?: string
+  expiresAt?: number
+  updatedAt?: number
+}
+
+async function locksCollection() {
+  const { database } = await collections()
+  return database.collection<LockDoc>(COL.locks)
+}
+
+async function acquireLock(): Promise<boolean> {
+  if (config.disableLock) return true
+  const locks = await locksCollection()
+  const now = Date.now()
+  const existing = await locks.findOne({ _id: LOCK_ID })
+  if (existing && existing.owner !== config.workerId && Number(existing.expiresAt || 0) > now) {
+    return false
+  }
+  await locks.updateOne(
+    { _id: LOCK_ID },
+    { $set: { owner: config.workerId, host: os.hostname(), expiresAt: now + config.lockTtlMs, updatedAt: now } },
+    { upsert: true },
+  )
+  return true
+}
+
+async function renewLock(): Promise<boolean> {
+  if (config.disableLock) return true
+  const locks = await locksCollection()
+  const result = await locks.updateOne(
+      { _id: LOCK_ID, owner: config.workerId },
+      { $set: { expiresAt: Date.now() + config.lockTtlMs, updatedAt: Date.now() } },
+    )
+  return result.matchedCount === 1
+}
+
+async function releaseLock() {
+  if (config.disableLock) return
+  try {
+    const locks = await locksCollection()
+    await locks.deleteOne({ _id: LOCK_ID, owner: config.workerId })
+  } catch {
+    /* ignore */
+  }
+}
+
+async function waitForLock(timeoutMs: number) {
+  const started = Date.now()
+  let attempts = 0
+  while (Date.now() - started < timeoutMs) {
+    if (await acquireLock()) return true
+    attempts += 1
+    if (attempts === 1) {
+      log('worker lain sedang memegang lock, menunggu giliran…')
+    }
+    await sleep(5000)
+  }
+  return false
+}
+
+async function waitForSocket(timeoutMs = 20_000) {
+  const started = Date.now()
+  while (!sock && Date.now() - started < timeoutMs) {
+    await sleep(300)
+  }
+  if (!sock) throw new Error('Worker belum siap membuat socket WhatsApp. Coba lagi beberapa detik.')
+  return sock
 }
 
 /* ------------------------------------------------------------------ */
@@ -566,11 +655,22 @@ async function executeCommand(command: Document) {
       return downloadMediaOnDemand({ jid: payload.jid, messageId: payload.messageId })
 
     case 'pair': {
-      const active = requireSocket()
-      if (active.authState.creds.registered) throw new Error('Sesi sudah terdaftar di WhatsApp. Logout dulu untuk menautkan ulang.')
-      const code = await active.requestPairingCode(String(payload.phone || '').replace(/[^0-9]/g, ''))
-      await writeStatus({ pairingCode: code, pairingPhone: String(payload.phone || '') })
-      return { code }
+      const active = await waitForSocket(12_000)
+      if (active.authState.creds.registered) {
+        throw new Error('Sesi sudah terdaftar di WhatsApp. Putuskan sesi dulu untuk menautkan ulang.')
+      }
+      const phone = String(payload.phone || '').replace(/[^0-9]/g, '')
+      const code = await active.requestPairingCode(phone)
+      const issuedAt = Date.now()
+      const expiresAt = issuedAt + config.pairingTtlMs
+      await writeStatus({
+        pairingCode: code,
+        pairingPhone: phone,
+        pairingAt: issuedAt,
+        pairingExpiresAt: expiresAt,
+      })
+      log(`pairing code dibuat untuk ${phone} (berlaku ${Math.round(config.pairingTtlMs / 1000)} dtk)`)
+      return { code, phone, issuedAt, expiresAt, expiresIn: Math.round(config.pairingTtlMs / 1000) }
     }
 
     case 'logout': {
@@ -723,6 +823,8 @@ async function start() {
           qrUpdatedAt: null,
           qrExpiresAt: null,
           pairingCode: null,
+          pairingAt: null,
+          pairingExpiresAt: null,
           connectedAt: Date.now(),
           lastError: null,
         })
@@ -880,11 +982,32 @@ async function start() {
 async function bootstrap() {
   await ensureIndexes()
 
+  const hasLock = await waitForLock(config.lockWaitMs)
+  if (!hasLock) {
+    log('worker lain masih aktif memegang sesi. Keluar tanpa mengganggu sesi tersebut.')
+    await closeDb().catch(() => null)
+    process.exit(0)
+  }
+  log(`lock didapat oleh ${config.workerId}`)
+
   const { database } = await collections()
   // Reset commands that were left mid-flight by a previous crash.
   await database
     .collection(COL.commands)
     .updateMany({ status: 'processing' }, { $set: { status: 'pending', updatedAt: Date.now() } })
+
+  // Perintah lama (mis. minta QR saat worker mati) tidak boleh dieksekusi
+  // sekarang: QR/kode pairing-nya sudah tidak ditunggu siapa pun.
+  await database.collection(COL.commands).updateMany(
+    { status: 'pending', createdAt: { $lt: Date.now() - 120_000 } },
+    {
+      $set: {
+        status: 'error',
+        error: 'Worker tidak aktif saat perintah dikirim. Minta ulang setelah worker menyala.',
+        updatedAt: Date.now(),
+      },
+    },
+  )
 
   // Warm contact name cache.
   const contacts = await database
@@ -905,17 +1028,41 @@ async function bootstrap() {
 
   heartbeatTimer = setInterval(() => {
     writeStatus({}).catch(() => null)
+    renewLock()
+      .then((held) => {
+        if (held) {
+          lockFailures = 0
+          return
+        }
+        lockFailures += 1
+        log(`lock worker hilang (${lockFailures}/3)`)
+        if (lockFailures >= 3) {
+          console.error('[worker] lock diambil worker lain, proses berhenti agar tidak bentrok.')
+          process.exit(1)
+        }
+      })
+      .catch(() => null)
   }, 15_000)
   commandTimer = setInterval(() => {
     commandLoop().catch(() => null)
   }, 900)
   const qrSweepTimer = setInterval(() => {
-    sweepExpiredQr().catch(() => null)
+    sweepEphemeral().catch(() => null)
   }, config.qrSweepMs)
   qrSweepTimer.unref?.()
 
   await start()
   commandLoop().catch(() => null)
+
+  if (config.maxRuntimeMs > 0) {
+    const runtimeTimer = setTimeout(() => {
+      const minutes = Math.round(config.maxRuntimeMs / 60_000)
+      log(`batas waktu ${minutes} menit tercapai — menutup worker agar bisa dijalankan ulang.`)
+      void shutdown('runtime-limit')
+    }, config.maxRuntimeMs)
+    runtimeTimer.unref?.()
+  }
+
   log(`worker ${config.workerId} aktif · db=${config.dbName} · session=${config.sessionId}`)
 }
 
@@ -932,6 +1079,7 @@ async function shutdown(signal: string) {
     /* noop */
   }
   await sleep(400)
+  await releaseLock().catch(() => null)
   await closeDb().catch(() => null)
   process.exit(0)
 }

@@ -10,6 +10,7 @@ export const COL = {
   commands: 'wa_commands',
   media: 'wa_media',
   uploads: 'wa_uploads',
+  locks: 'wa_locks',
 } as const
 
 let clientPromise: Promise<MongoClient> | null = null

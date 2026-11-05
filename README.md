@@ -165,6 +165,12 @@ masuk ke antrean `wa_commands`, dieksekusi worker dalam ≈1 detik.
 | `WA_LOG_LEVEL` | Worker | tidak | `warn` |
 | `WA_QR_TTL_FIRST_MS` | Worker | tidak | `60000` (sama dengan Baileys) |
 | `WA_QR_TTL_NEXT_MS` | Worker | tidak | `20000` (sama dengan Baileys) |
+| `WA_PAIRING_TTL_MS` | Worker | tidak | `120000` (umur kode pairing) |
+| `WA_MAX_RUNTIME_MS` | Worker | tidak | `0` (tanpa batas; GHA memakai 3.300.000 = 55 menit) |
+| `WA_LOCK_TTL_MS` | Worker | tidak | `90000` |
+| `WA_LOCK_WAIT_MS` | Worker | tidak | `300000` |
+| `WA_DISABLE_LOCK` | Worker | tidak | `false` |
+| `WORKER_VERSION` | Worker | tidak | `1.1.0` (tampil di panel) |
 
 `/api/health` menampilkan status koneksi MongoDB dan apakah `ADMIN_PASSWORD` sudah diset
 (tanpa membocorkan nilainya).
@@ -207,7 +213,34 @@ masuk ke antrean `wa_commands`, dieksekusi worker dalam ≈1 detik.
 
 Worker butuh proses Node.js yang hidup terus. Pilih salah satu:
 
-### a. VPS / server sendiri (systemd)
+### a. GitHub Actions — tanpa console / tanpa kartu (paling mudah)
+
+Repo sudah punya workflow `.github/workflows/worker.yml`. Worker menyala sendiri,
+berjalan ±55 menit, menutup diri, lalu **langsung memicu run berikutnya**
+(jeda ±1 menit). Cron tiap jam menjadi jaring pengaman kalau rantai terputus.
+Tidak perlu terminal sama sekali — semua dari halaman GitHub.
+
+1. Buka repo di GitHub → **Settings → Secrets and variables → Actions**.
+2. Tab **Secrets** → **New repository secret** → nama `MONGODB_URI`, isi connection
+   string Atlas (yang sama dengan di Vercel).
+3. (Opsional) tab **Variables** → `MONGODB_DB_NAME=fyywhatsapp`, `WA_SESSION_ID=default`.
+4. Tab **Actions** → pilih **WhatsApp Worker** → **Run workflow**.
+5. Buka `https://fyywhatsappadmin.vercel.app/panel/connect` — dalam ±1 menit QR
+   muncul sendiri (atau pakai pairing code).
+
+Catatan:
+
+- Job GitHub Actions maksimal 6 jam; worker menutup dirinya di menit ke-55
+  (`WA_MAX_RUNTIME_MS`) supaya jadwal berikutnya tidak tumpang tindih.
+- Repo ini publik → menit Actions **gratis tanpa batas**. Kalau repo di-private,
+  ubah jadwal jadi tiap 3–6 jam agar tetap di kuota 2.000 menit/bulan.
+- `wa_locks` mencegah dua worker (mis. Actions + laptop) memegang sesi yang sama.
+  Worker kedua akan menunggu giliran, lalu keluar bila lock masih dipegang.
+- Repo publik: jangan simpan `MONGODB_URI` di file — pakai Secrets.
+- Butuh sesi benar-benar 24/7 tanpa jeda? Pakai Render/Railway/VPS (opsi b/c),
+  atau turunkan `WA_MAX_RUNTIME_MS` + jadwal jadi `*/30 * * * *`.
+
+### b. VPS / server sendiri (systemd)
 
 ```bash
 git clone https://github.com/IKOO-INC/FYYBOT.git /opt/fyybot
@@ -236,7 +269,7 @@ sudo systemctl enable --now fyybot-worker
 sudo journalctl -u fyybot-worker -f
 ```
 
-### b. Render / Railway / Fly.io (Docker)
+### c. Render / Railway / Fly.io (Docker)
 
 Repo sudah menyertakan `worker/Dockerfile` dan `render.yaml`.
 
@@ -244,7 +277,7 @@ Repo sudah menyertakan `worker/Dockerfile` dan `render.yaml`.
 - Railway/Fly: build dengan `dockerfilePath = worker/Dockerfile`, lalu set env yang sama.
 - Tidak butuh port publik: worker hanya bicara ke MongoDB.
 
-### c. Menjalankan manual di komputer
+### d. Menjalankan manual di komputer
 
 ```bash
 cd worker
@@ -268,6 +301,7 @@ dimatikan, koneksi WhatsApp ikut berhenti (sesi tetap aman di MongoDB).
 | `wa_contacts` | cache nama kontak |
 | `wa_commands` | antrean perintah panel → worker |
 | `wa_uploads` | file sementara dari panel → worker (TTL 24 jam) |
+| `wa_locks` | lock single-worker (siapa pemegang socket + kapan kedaluwarsa) |
 
 Sesi disimpan dengan `BufferJSON.replacer/reviver`, sehingga kunci biner Signal tetap utuh.
 
@@ -282,7 +316,7 @@ memerlukan cookie sesi admin.
 | --- | --- |
 | `POST /api/auth/login` | `{ password }` → set cookie httpOnly |
 | `POST /api/auth/logout` | hapus cookie panel |
-| `GET /api/session` | status sesi + QR (data URL) |
+| `GET /api/session` | status sesi + QR (data URL) + sisa umur QR/pairing code |
 | `POST /api/session/action` | `{ action: "pair" \| "logout" \| "restart", phone? }` |
 | `GET /api/chats?filter=all\|unread\|groups\|archived&q=` | daftar chat |
 | `POST /api/chats/action` | `{ jid, action: "read" \| "typing" }` |
