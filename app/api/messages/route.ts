@@ -14,10 +14,11 @@ export async function GET(request: Request) {
     const jid = url.searchParams.get('jid')
     if (!jid) return badRequest('jid wajib diisi')
     const before = Number(url.searchParams.get('before') || 0)
+    const after = Number(url.searchParams.get('after') || 0)
     const limit = Number(url.searchParams.get('limit') || 40)
 
     const [{ messages, hasMore }, chat] = await Promise.all([
-      listMessages(jid, { before: before || undefined, limit }),
+      listMessages(jid, { before: before || undefined, after: after || undefined, limit }),
       getChat(jid),
     ])
 

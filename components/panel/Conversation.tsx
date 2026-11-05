@@ -18,7 +18,7 @@ import {
   WifiIcon,
   XIcon,
 } from '@/components/icons'
-import { apiFetch, usePoll } from '@/lib/client'
+import { apiFetch } from '@/lib/client'
 import { formatChatTime, formatDateDivider, prettyPhone, truncate } from '@/lib/format'
 import type { ChatSummary, MessageDoc } from '@/lib/types'
 
@@ -41,10 +41,80 @@ export default function Conversation({
   onSent: () => void
   onRead: (jid: string) => void
 }) {
-  const { data, refresh } = usePoll<MessagesResponse>(
-    `/api/messages?jid=${encodeURIComponent(jid)}&limit=40`,
-    1800,
-  )
+  const [data, setData] = useState<MessagesResponse | null>(null)
+  const dataRef = useRef<MessagesResponse | null>(null)
+  dataRef.current = data
+
+  /**
+   * Muat halaman pertama (40 pesan terakhir).
+   * Dipakai saat chat dibuka, setelah kirim pesan, dan saat tab kembali aktif.
+   */
+  const refresh = useCallback(async () => {
+    try {
+      const res = await fetch(`/api/messages?jid=${encodeURIComponent(jid)}&limit=40`, { cache: 'no-store' })
+      if (res.status === 401) {
+        window.location.href = '/login'
+        return
+      }
+      const json = (await res.json()) as MessagesResponse & { error?: string }
+      if (!res.ok) throw new Error(json?.error || 'Gagal memuat pesan')
+      setData(json)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Gagal memuat pesan')
+    }
+  }, [jid])
+
+  useEffect(() => {
+    void refresh()
+  }, [refresh])
+
+  /**
+   * Polling ringan: hanya meminta pesan yang lebih baru dari yang sudah tampil
+   * (`after=`), jadi setiap 2,5 detik yang diangkut biasanya 0–2 pesan saja,
+   * bukan 40 pesan penuh seperti sebelumnya.
+   */
+  useEffect(() => {
+    let alive = true
+    const tick = async () => {
+      if (document.visibilityState !== 'visible') return
+      const current = dataRef.current
+      if (!current) return
+      const newest = current.messages.reduce((max, message) => Math.max(max, message.ts || 0), 0)
+      if (!newest) return
+      try {
+        const res = await fetch(
+          `/api/messages?jid=${encodeURIComponent(jid)}&after=${newest}`,
+          { cache: 'no-store' },
+        )
+        if (!res.ok || res.status === 401) return
+        const json = (await res.json()) as MessagesResponse
+        if (!alive || !json?.ok) return
+        setData((previous) => {
+          if (!previous) return json
+          if (!json.messages.length) {
+            return json.chat ? { ...previous, chat: json.chat } : previous
+          }
+          const seen = new Set(previous.messages.map((message) => message._id))
+          const fresh = json.messages.filter((message) => !seen.has(message._id))
+          if (!fresh.length) return previous
+          const messages = [...previous.messages, ...fresh].slice(-300)
+          return { ...previous, messages, chat: json.chat || previous.chat }
+        })
+      } catch {
+        /* biarkan polling berikutnya mencoba lagi */
+      }
+    }
+    const timer = window.setInterval(() => void tick(), 2500)
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') void tick()
+    }
+    document.addEventListener('visibilitychange', onVisible)
+    return () => {
+      alive = false
+      window.clearInterval(timer)
+      document.removeEventListener('visibilitychange', onVisible)
+    }
+  }, [jid])
 
   const [older, setOlder] = useState<MessageDoc[]>([])
   const [optimistic, setOptimistic] = useState<MessageDoc[]>([])
@@ -340,7 +410,7 @@ export default function Conversation({
               </div>
             )}
 
-            {visible.length === 0 && !data?.hasMore && (
+            {data && visible.length === 0 && !data?.hasMore && (
               <div className="flex h-full flex-col items-center justify-center gap-2 text-center">
                 <span className="flex h-12 w-12 items-center justify-center rounded-full bg-black/5 text-[var(--wa-text-soft)]">
                   <WifiIcon size={22} />

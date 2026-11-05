@@ -2,7 +2,7 @@
   "name": "fyywhatsappadmin",
   "version": "1.0.0",
   "private": true,
-  "description": "FYY WhatsApp Admin \u2014 WhatsApp Web style inbox + Baileys host, session stored in MongoDB",
+  "description": "FYY WhatsApp Admin — WhatsApp Web style inbox + Baileys host, session stored in MongoDB",
   "scripts": {
     "dev": "next dev -H 0.0.0.0",
     "build": "next build",
@@ -11,7 +11,8 @@
     "worker": "npm --prefix worker run dev",
     "worker:start": "npm --prefix worker start",
     "setup": "npm install --no-audit --no-fund && npm --prefix worker install --no-audit --no-fund",
-    "local": "node scripts/dev-local.mjs"
+    "local": "node scripts/dev-local.mjs",
+    "chats:export": "node scripts/export-chats.mjs"
   },
   "dependencies": {
     "mongodb": "^6.20.0",
