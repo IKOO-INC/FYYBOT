@@ -39,6 +39,7 @@ let reconnectTimer: NodeJS.Timeout | null = null
 let heartbeatTimer: NodeJS.Timeout | null = null
 let commandTimer: NodeJS.Timeout | null = null
 let commandsRunning = false
+let qrCount = 0
 
 const contactNames = new Map<string, string>()
 const groupCache = new Map<string, { data: GroupMetadata; ts: number }>()
@@ -81,13 +82,36 @@ async function collections(): Promise<{
   }
 }
 
-async function writeStatus(set: Record<string, unknown>, unset: Record<string, ''> = {}) {
+async function writeStatus(
+  set: Record<string, unknown>,
+  unset: Record<string, ''> = {},
+  inc: Record<string, number> = {},
+) {
   const { session } = await collections()
   const update: Record<string, unknown> = {
     $set: clean({ ...set, workerId: config.workerId, workerAt: Date.now() }),
   }
   if (Object.keys(unset).length) update.$unset = unset
+  if (Object.keys(inc).length) update.$inc = inc
   await session.updateOne({ _id: 'session' }, update, { upsert: true })
+}
+
+/**
+ * QR dari Baileys hanya ditulis saat event `connection.update` membawa `qr`.
+ * Setiap QR punya masa berlaku (60 detik untuk yang pertama, 20 detik untuk
+ * berikutnya). Kalau tidak ada QR baru sebelum kedaluwarsa, QR lama dibersihkan
+ * agar panel tidak pernah menampilkan QR basi.
+ */
+async function sweepExpiredQr() {
+  try {
+    const { session } = await collections()
+    await session.updateOne(
+      { _id: 'session', qr: { $type: 'string' }, qrExpiresAt: { $lt: Date.now() - 2500 } },
+      { $unset: { qr: '', qrExpiresAt: '' } },
+    )
+  } catch (err) {
+    logger.debug({ err }, 'qr sweep failed')
+  }
 }
 
 /* ------------------------------------------------------------------ */
@@ -657,7 +681,8 @@ async function start() {
       cachedGroupMetadata,
     })
 
-    await writeStatus({ status: 'connecting' })
+    qrCount = 0
+    await writeStatus({ status: 'connecting', qr: null, qrExpiresAt: null })
 
     sock.ev.on('creds.update', async () => {
       try {
@@ -670,11 +695,19 @@ async function start() {
     sock.ev.on('connection.update', async (update) => {
       const { connection, lastDisconnect, qr } = update
       if (qr) {
-        await writeStatus({ qr, qrUpdatedAt: Date.now(), status: 'connecting' })
-        log('QR baru siap dipindai')
+        qrCount += 1
+        const ttl = qrCount === 1 ? config.qrTtlFirstMs : config.qrTtlNextMs
+        const issuedAt = Date.now()
+        await writeStatus(
+          { qr, qrUpdatedAt: issuedAt, qrExpiresAt: issuedAt + ttl, status: 'connecting' },
+          {},
+          { qrSeq: 1 },
+        )
+        log(`QR #${qrCount} dari Baileys siap dipindai (berlaku ${Math.round(ttl / 1000)} dtk)`)
       }
       if (connection === 'open') {
         reconnectAttempts = 0
+        qrCount = 0
         meId = sock?.user?.id || null
         const me = {
           id: sock?.user?.id || null,
@@ -688,6 +721,7 @@ async function start() {
           me,
           qr: null,
           qrUpdatedAt: null,
+          qrExpiresAt: null,
           pairingCode: null,
           connectedAt: Date.now(),
           lastError: null,
@@ -699,7 +733,8 @@ async function start() {
         const statusCode = (lastDisconnect?.error as Boom | undefined)?.output?.statusCode
         const reason = (lastDisconnect?.error as Error | undefined)?.message || 'koneksi terputus'
         const loggedOut = statusCode === DisconnectReason.loggedOut
-        await writeStatus({ status: loggedOut ? 'disconnected' : 'close', lastError: reason, qr: null })
+        qrCount = 0
+        await writeStatus({ status: loggedOut ? 'disconnected' : 'close', lastError: reason, qr: null, qrExpiresAt: null })
         log(`koneksi tertutup (${statusCode || '?'}) ${reason}`)
         if (loggedOut) {
           if (authState) await authState.clear()
@@ -863,7 +898,10 @@ async function bootstrap() {
     }
   }
 
-  await writeStatus({ status: 'connecting', startedAt: Date.now(), lastError: null }, { qr: '' })
+  await writeStatus(
+    { status: 'connecting', startedAt: Date.now(), lastError: null, qr: null, qrExpiresAt: null, qrSeq: 0 },
+    { qr: '' },
+  )
 
   heartbeatTimer = setInterval(() => {
     writeStatus({}).catch(() => null)
@@ -871,6 +909,10 @@ async function bootstrap() {
   commandTimer = setInterval(() => {
     commandLoop().catch(() => null)
   }, 900)
+  const qrSweepTimer = setInterval(() => {
+    sweepExpiredQr().catch(() => null)
+  }, config.qrSweepMs)
+  qrSweepTimer.unref?.()
 
   await start()
   commandLoop().catch(() => null)
