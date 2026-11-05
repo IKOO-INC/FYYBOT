@@ -1,0 +1,23 @@
+# Deploy worker Baileys ke Render (https://render.com)
+# New → Blueprint → pilih repo ini → isi MONGODB_URI saat diminta.
+services:
+  - type: worker
+    name: fyy-whatsapp-worker
+    runtime: docker
+    dockerfilePath: ./worker/Dockerfile
+    dockerContext: ./worker
+    plan: starter
+    autoDeploy: true
+    envVars:
+      - key: MONGODB_URI
+        sync: false
+      - key: MONGODB_DB_NAME
+        value: fyywhatsapp
+      - key: WA_SESSION_ID
+        value: default
+      - key: WA_SYNC_FULL_HISTORY
+        value: 'true'
+      - key: WA_AUTO_MEDIA
+        value: 'true'
+      - key: WA_LOG_LEVEL
+        value: info

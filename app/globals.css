@@ -1,0 +1,319 @@
+@import 'tailwindcss';
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+  --font-sans: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial,
+    'Noto Sans', sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+  --color-brand-50: #e7fbf5;
+  --color-brand-100: #c9f5e7;
+  --color-brand-200: #93ecd3;
+  --color-brand-300: #55ddb8;
+  --color-brand-400: #1fc79b;
+  --color-brand-500: #00a884;
+  --color-brand-600: #008f73;
+  --color-brand-700: #00725d;
+  --color-brand-800: #04584a;
+  --color-brand-900: #063f36;
+  --color-brand-950: #01251f;
+
+  --color-ink-900: #0b141a;
+  --color-ink-800: #111b21;
+  --color-ink-700: #202c33;
+  --color-ink-600: #2a3942;
+}
+
+:root {
+  --wa-accent: #00a884;
+  --wa-accent-strong: #008069;
+  --wa-app-bg: #d1d7db;
+  --wa-pane: #ffffff;
+  --wa-pane-2: #f0f2f5;
+  --wa-header: #f0f2f5;
+  --wa-chat-bg: #efeae2;
+  --wa-text: #111b21;
+  --wa-text-soft: #667781;
+  --wa-border: #e9edef;
+  --wa-bubble-in: #ffffff;
+  --wa-bubble-out: #d9fdd3;
+  --wa-hover: #f5f6f6;
+  --wa-active: #f0f2f5;
+  --wa-badge: #25d366;
+  --wa-tick: #53bdeb;
+  --wa-shadow: 0 1px 0.5px rgba(11, 20, 26, 0.13);
+  --wa-composer: #ffffff;
+}
+
+.dark {
+  --wa-accent: #00a884;
+  --wa-accent-strong: #00a884;
+  --wa-app-bg: #0b141a;
+  --wa-pane: #111b21;
+  --wa-pane-2: #202c33;
+  --wa-header: #202c33;
+  --wa-chat-bg: #0b141a;
+  --wa-text: #e9edef;
+  --wa-text-soft: #8696a0;
+  --wa-border: #222d34;
+  --wa-bubble-in: #202c33;
+  --wa-bubble-out: #005c4b;
+  --wa-hover: #202c33;
+  --wa-active: #2a3942;
+  --wa-badge: #00a884;
+  --wa-tick: #53bdeb;
+  --wa-shadow: 0 1px 0.5px rgba(0, 0, 0, 0.2);
+  --wa-composer: #202c33;
+}
+
+* {
+  -webkit-tap-highlight-color: transparent;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  font-family: var(--font-sans);
+  background: var(--wa-app-bg);
+  color: var(--wa-text);
+}
+
+::selection {
+  background: color-mix(in srgb, var(--wa-accent) 30%, transparent);
+}
+
+/* thin scrollbars, WhatsApp style */
+.wa-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(134, 150, 160, 0.45) transparent;
+}
+.wa-scroll::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+.wa-scroll::-webkit-scrollbar-thumb {
+  background: rgba(134, 150, 160, 0.45);
+  border-radius: 999px;
+}
+.wa-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* ---------------------------------------------------------------- */
+/* Panel (WhatsApp Web clone)                                        */
+/* ---------------------------------------------------------------- */
+.wa-app {
+  position: relative;
+  isolation: isolate;
+  background: var(--wa-app-bg);
+}
+.wa-app::before {
+  content: '';
+  position: absolute;
+  inset-inline: 0;
+  top: 0;
+  height: 127px;
+  background: #00a884;
+  z-index: -1;
+}
+.dark .wa-app::before {
+  background: #111b21;
+}
+
+.wa-pane {
+  background: var(--wa-pane);
+}
+.wa-pane-2 {
+  background: var(--wa-pane-2);
+}
+.wa-header {
+  background: var(--wa-header);
+}
+.wa-border {
+  border-color: var(--wa-border);
+}
+.wa-text {
+  color: var(--wa-text);
+}
+.wa-text-soft {
+  color: var(--wa-text-soft);
+}
+.wa-hover:hover {
+  background: var(--wa-hover);
+}
+.wa-active {
+  background: var(--wa-active);
+}
+.wa-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 999px;
+  color: var(--wa-text-soft);
+  transition: background 120ms ease, color 120ms ease;
+}
+.wa-icon-btn:hover {
+  background: color-mix(in srgb, var(--wa-text-soft) 12%, transparent);
+  color: var(--wa-text);
+}
+
+.wa-wallpaper {
+  background-color: var(--wa-chat-bg);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='260' height='260' viewBox='0 0 260 260'%3E%3Cg fill='none' stroke='%23000' stroke-opacity='0.045' stroke-width='1.4'%3E%3Ccircle cx='36' cy='34' r='9'/%3E%3Cpath d='M96 22c8 0 14 6 14 14s-6 14-14 14'/%3E%3Cpath d='M150 30h22v18h-22z'/%3E%3Ccircle cx='214' cy='40' r='12'/%3E%3Cpath d='M24 96h20v20H24z'/%3E%3Ccircle cx='84' cy='104' r='11'/%3E%3Cpath d='M132 92l16 14-16 14'/%3E%3Cpath d='M196 96c10 0 18 8 18 18h-36c0-10 8-18 18-18z'/%3E%3Ccircle cx='44' cy='168' r='10'/%3E%3Cpath d='M92 160h24v16H92z'/%3E%3Ccircle cx='156' cy='168' r='13'/%3E%3Cpath d='M206 156l14 12-14 12'/%3E%3Cpath d='M112 214c4-6 12-6 16 0'/%3E%3Ccircle cx='216' cy='220' r='9'/%3E%3Cpath d='M30 226h26'/%3E%3C/g%3E%3C/svg%3E");
+  background-repeat: repeat;
+}
+.dark .wa-wallpaper {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='260' height='260' viewBox='0 0 260 260'%3E%3Cg fill='none' stroke='%23ffffff' stroke-opacity='0.035' stroke-width='1.4'%3E%3Ccircle cx='36' cy='34' r='9'/%3E%3Cpath d='M96 22c8 0 14 6 14 14s-6 14-14 14'/%3E%3Cpath d='M150 30h22v18h-22z'/%3E%3Ccircle cx='214' cy='40' r='12'/%3E%3Cpath d='M24 96h20v20H24z'/%3E%3Ccircle cx='84' cy='104' r='11'/%3E%3Cpath d='M132 92l16 14-16 14'/%3E%3Cpath d='M196 96c10 0 18 8 18 18h-36c0-10 8-18 18-18z'/%3E%3Ccircle cx='44' cy='168' r='10'/%3E%3Cpath d='M92 160h24v16H92z'/%3E%3Ccircle cx='156' cy='168' r='13'/%3E%3Cpath d='M206 156l14 12-14 12'/%3E%3Cpath d='M112 214c4-6 12-6 16 0'/%3E%3Ccircle cx='216' cy='220' r='9'/%3E%3Cpath d='M30 226h26'/%3E%3C/g%3E%3C/svg%3E");
+}
+
+.wa-bubble {
+  position: relative;
+  border-radius: 8px;
+  box-shadow: var(--wa-shadow);
+  max-width: min(65ch, 78%);
+}
+.wa-bubble-in {
+  background: var(--wa-bubble-in);
+}
+.wa-bubble-out {
+  background: var(--wa-bubble-out);
+}
+.wa-bubble-tail-in::after,
+.wa-bubble-tail-out::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  width: 10px;
+  height: 13px;
+  background: inherit;
+}
+.wa-bubble-tail-in::after {
+  left: -8px;
+  clip-path: polygon(100% 0, 100% 100%, 0 0);
+}
+.wa-bubble-tail-out::after {
+  right: -8px;
+  clip-path: polygon(0 0, 0 100%, 100% 0);
+}
+
+.wa-message-row:hover .wa-msg-actions {
+  opacity: 1;
+}
+.wa-msg-actions {
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.wa-tick-read {
+  color: var(--wa-tick);
+}
+
+/* ---------------------------------------------------------------- */
+/* Landing page helpers                                              */
+/* ---------------------------------------------------------------- */
+.landing {
+  --lp-bg: #04100c;
+  background: var(--lp-bg);
+  color: #e6f2ee;
+}
+.landing-glow {
+  background:
+    radial-gradient(60% 55% at 18% 8%, rgba(0, 168, 132, 0.28), transparent 62%),
+    radial-gradient(45% 45% at 82% 12%, rgba(37, 211, 102, 0.16), transparent 65%),
+    radial-gradient(55% 60% at 60% 95%, rgba(0, 128, 90, 0.2), transparent 65%);
+}
+.landing-grid {
+  background-image: linear-gradient(rgba(255, 255, 255, 0.045) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.045) 1px, transparent 1px);
+  background-size: 56px 56px;
+  mask-image: radial-gradient(ellipse at 50% 0%, black 45%, transparent 78%);
+}
+.glass {
+  background: rgba(255, 255, 255, 0.055);
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  backdrop-filter: blur(14px);
+}
+.glass-strong {
+  background: rgba(9, 26, 21, 0.82);
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  backdrop-filter: blur(18px);
+}
+.text-gradient {
+  background: linear-gradient(100deg, #ffffff 10%, #8ff5d4 46%, #2fd4a7 76%, #ffffff 98%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+.marquee {
+  animation: marquee 32s linear infinite;
+}
+@keyframes marquee {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(-50%);
+  }
+}
+.float-slow {
+  animation: float 7s ease-in-out infinite;
+}
+@keyframes float {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-9px);
+  }
+}
+.fade-up {
+  animation: fadeUp 0.6s ease both;
+}
+@keyframes fadeUp {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.typing-dot {
+  animation: typing 1.2s infinite ease-in-out;
+}
+.typing-dot:nth-child(2) {
+  animation-delay: 0.15s;
+}
+.typing-dot:nth-child(3) {
+  animation-delay: 0.3s;
+}
+@keyframes typing {
+  0%,
+  60%,
+  100% {
+    opacity: 0.35;
+    transform: translateY(0);
+  }
+  30% {
+    opacity: 1;
+    transform: translateY(-2px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .marquee,
+  .float-slow,
+  .fade-up,
+  .typing-dot {
+    animation: none !important;
+  }
+}
