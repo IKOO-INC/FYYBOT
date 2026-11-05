@@ -142,7 +142,7 @@ const faqs = [
   },
   {
     q: 'Bisa mengirim gambar, video, dan dokumen?',
-    a: 'Bisa. Lampirkan file langsung dari kolom pesan (maksimal 9 MB per file). Pesan masuk yang berisi media otomatis diunduh ke MongoDB agar bisa dibuka kapan pun.',
+    a: 'Bisa. Lampirkan file langsung dari kolom pesan (maksimal 4 MB per file — batas body serverless Vercel; file lebih besar bisa dikirim dari HP). Pesan masuk yang berisi media otomatis diunduh ke MongoDB agar bisa dibuka kapan pun.',
   },
   {
     q: 'Bagaimana keamanan panelnya?',

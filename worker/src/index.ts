@@ -556,6 +556,7 @@ async function executeCommand(command: Document) {
       authState = null
       meId = null
       await writeStatus({ status: 'disconnected', me: null, qr: null, pairingCode: null, connectedAt: null })
+      scheduleReconnect(2500)
       return { ok: true }
     }
 
@@ -704,6 +705,8 @@ async function start() {
           if (authState) await authState.clear()
           authState = null
           await writeStatus({ me: null, pairingCode: null, connectedAt: null, status: 'disconnected' })
+          // Start a fresh session so a new QR becomes available for relinking.
+          scheduleReconnect(2500)
         } else {
           scheduleReconnect(Math.min(20_000, 2000 * Math.max(1, reconnectAttempts)))
         }
