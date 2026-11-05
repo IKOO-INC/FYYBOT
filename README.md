@@ -177,6 +177,11 @@ masuk ke antrean `wa_commands`, dieksekusi worker dalam ≈1 detik.
 | `WA_LOCK_TTL_MS` | Worker | tidak | `90000` |
 | `WA_LOCK_WAIT_MS` | Worker | tidak | `300000` |
 | `WA_DISABLE_LOCK` | Worker | tidak | `false` |
+| `WA_RECONNECT_MAX_ATTEMPTS` | Worker | tidak | `8` (lalu berhenti mencoba) |
+| `WA_BACKOFF_MAX_MS` | Worker | tidak | `60000` |
+| `WA_RETRY_AFTER_GIVEUP_MS` | Worker | tidak | `1800000` (30 menit) |
+| `WA_SAVE_CREDS_DEBOUNCE_MS` | Worker | tidak | `400` |
+| `WA_SHUTDOWN_DRAIN_MS` | Worker | tidak | `4000` |
 | `WORKER_VERSION` | Worker | tidak | `1.1.0` (tampil di panel) |
 
 `/api/health` menampilkan status koneksi MongoDB dan apakah `ADMIN_PASSWORD` sudah diset
@@ -482,3 +487,36 @@ pengiriman massal/spam. Risiko pembatasan akun ditanggung pengguna.
   (error code 40) yang membuat worker berhenti saat bootstrap. `writeStatus` sekarang
   membuang key yang ada di `$unset`/`$inc` dari `$set`, dan pemanggilan di bootstrap
   tidak lagi mengirim `qr` di dua operator. Perbarui clone lama dengan `git pull`.
+
+---
+
+## Keamanan sesi (supaya tidak perlu scan ulang)
+
+Sesi WhatsApp (creds + Signal keys) disimpan di `wa_auth` dan ditulis dengan hati-hati:
+
+- **Shutdown rapi.** `SIGINT`/`SIGTERM` (Ctrl+C, stop container, cancel GitHub Actions)
+  menutup socket, lalu **menunggu semua tulisan auth selesai** (`flush`, maksimal
+  `WA_SHUTDOWN_DRAIN_MS`) sebelum melepas lock dan menutup MongoDB. Ada watchdog 8 detik
+  supaya proses tidak menggantung. Kalau proses mati di tengah penulisan, session bisa
+  rusak dan harus scan ulang — ini yang dicegah.
+- **Satu `bulkWrite` per batch** untuk Signal keys (bukan puluhan `updateOne` terpisah),
+  plus satu kali retry bila penulisan gagal. `saveCreds` di-debounce
+  `WA_SAVE_CREDS_DEBOUNCE_MS` supaya `creds.update` beruntun tidak membanjiri Atlas.
+- **Dokumen rusak tidak dipakai.** Kalau JSON di `wa_auth` tidak bisa dibaca (mis. proses
+  mati saat menulis), worker menganggapnya tidak ada dan meminta tautkan ulang — daripada
+  memakai sesi setengah jadi yang bisa memicu 401 berulang.
+- **Backoff bertingkat.** Gagal connect tidak di-retry tiap detik: 2s → 4s → 8s → 16s →
+  32s → 60s (dengan jitter ±20%), maksimal `WA_RECONNECT_MAX_ATTEMPTS`. Setelah itu worker
+  **berhenti mencoba**, menulis `lastError` ke panel, dan hanya mencoba lagi setelah
+  `WA_RETRY_AFTER_GIVEUP_MS` atau saat kamu menekan **Minta QR baru**.
+- **401/403 tidak di-loop.** Sesi yang ditolak WhatsApp akan **dihapus sekali** dari MongoDB,
+  status di panel menjadi “ditolak”, dan worker **tidak** auto-connect lagi. Kalau penolakan
+  terulang ≥2× dalam 10 menit, worker minta kamu menunggu beberapa jam sebelum menautkan
+  ulang. Logout yang kamu tekan sendiri tetap dilayani normal (dibedakan lewat flag internal).
+- **440 (connection replaced)** — kalau sesi dipakai proses/perangkat lain, worker langsung
+  berhenti dengan rapi dan melepas lock, tidak berebut koneksi.
+- **`markOnlineOnConnect: false`** — worker tidak menandai kamu “online” setiap kali
+  menyambung, jadi pola aktivitas di HP tetap wajar dan notifikasi tetap masuk.
+
+Ringkasnya: satu worker, shutdown yang menunggu state tersimpan, retry yang sabar, dan
+berhenti total saat sesi memang sudah ditolak.

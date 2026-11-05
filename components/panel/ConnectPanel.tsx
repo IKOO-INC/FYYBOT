@@ -576,6 +576,11 @@ export default function ConnectPanel() {
                         ? 'Worker aktif dan sedang meminta QR baru ke WhatsApp. Halaman ini menyegarkan otomatis tiap 2 detik.'
                         : 'QR tidak bisa dibuat tanpa worker. Klik “Cara menyalakan” di atas — pilih GitHub Actions (tanpa console), Render, atau jalankan worker di laptop/VPS.'}
                     </p>
+                    {session?.lastError && (
+                      <p className="mx-auto mt-3 max-w-sm rounded-lg bg-red-500/10 px-3 py-2 text-[11px] leading-relaxed text-red-600 dark:text-red-300">
+                        {session.lastError}
+                      </p>
+                    )}
                     <button
                       type="button"
                       onClick={() => void action('restart')}
@@ -584,6 +589,12 @@ export default function ConnectPanel() {
                     >
                       <RefreshIcon size={12} /> {busy === 'restart' ? 'Meminta…' : 'Minta QR baru'}
                     </button>
+                    {session?.lastError && workerAlive && (
+                      <p className="mx-auto mt-2 max-w-sm text-[10.5px] leading-relaxed text-[var(--wa-text-soft)]">
+                        Worker berhenti mencoba sendiri (mis. sesi ditolak WhatsApp). Tombol di atas memaksa
+                        percobaan baru tanpa menunggu jeda panjang.
+                      </p>
+                    )}
                   </div>
                 )}
               </div>

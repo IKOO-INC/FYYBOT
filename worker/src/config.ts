@@ -52,6 +52,15 @@ export const config = {
   // maksimal 6 jam per job: worker menutup diri lebih dulu supaya job
   // berikutnya bisa mengambil alih tanpa tumpang tindih.
   maxRuntimeMs: Number(process.env.WA_MAX_RUNTIME_MS || 0),
+  // Keamanan sesi: reconnect tidak boleh ngebut terus-menerus.
+  reconnectMaxAttempts: Number(process.env.WA_RECONNECT_MAX_ATTEMPTS || 8),
+  backoffMaxMs: Number(process.env.WA_BACKOFF_MAX_MS || 60_000),
+  // Setelah menyerah, worker diam menunggu perintah manual atau jeda ini.
+  retryAfterGiveUpMs: Number(process.env.WA_RETRY_AFTER_GIVEUP_MS || 30 * 60_000),
+  // Penggabungan penulisan creds (ms) supaya tidak membanjiri MongoDB.
+  saveCredsDebounceMs: Number(process.env.WA_SAVE_CREDS_DEBOUNCE_MS || 400),
+  // Batas waktu menunggu tulisan auth selesai saat shutdown.
+  shutdownDrainMs: Number(process.env.WA_SHUTDOWN_DRAIN_MS || 4000),
   version: process.env.WORKER_VERSION || '1.1.0',
   // Mode PC: tampilkan QR sebagai teks di terminal supaya bisa langsung
   // dipindai tanpa membuka panel. Default aktif hanya kalau dijalankan
