@@ -42,7 +42,10 @@ Panel pribadi untuk menghosting sesi WhatsApp dengan library **Baileys** (WhatsA
 
 **Koneksi**
 
-- QR otomatis dari worker, atau **pairing code** 8 digit via nomor.
+- QR **diambil langsung dari event `connection.update` Baileys** (`qr`), bukan gambar statis.
+- Umur QR mengikuti default Baileys 6.7 (`qrTimeout`): **QR pertama 60 detik, QR berikutnya 20 detik**. Setiap QR baru menaikkan `qrSeq`, panel menampilkan hitung mundur + progress, lalu mengganti gambar otomatis.
+- Kalau QR kedaluwarsa dan belum ada pengganti, worker menghapus `qr` dari MongoDB sehingga panel **tidak pernah** menampilkan QR basi (muncul status “menunggu QR baru” + tombol **Minta QR baru**).
+- Bisa juga **pairing code** 8 digit via nomor.
 - Status koneksi (connecting/open/close), heartbeat worker, detail akun (nomor, nama, platform, JID).
 - Tombol muat ulang koneksi & putuskan sesi (logout perangkat + hapus kredensial dari MongoDB).
 - Tidak ada akun baru: login panel pakai satu password admin, sesi WhatsApp dimuat seperti WhatsApp Web.
@@ -160,6 +163,8 @@ masuk ke antrean `wa_commands`, dieksekusi worker dalam ≈1 detik.
 | `WA_MAX_MEDIA_MB` | Worker | tidak | `8` |
 | `WA_HISTORY_LIMIT` | Worker | tidak | `60` |
 | `WA_LOG_LEVEL` | Worker | tidak | `warn` |
+| `WA_QR_TTL_FIRST_MS` | Worker | tidak | `60000` (sama dengan Baileys) |
+| `WA_QR_TTL_NEXT_MS` | Worker | tidak | `20000` (sama dengan Baileys) |
 
 `/api/health` menampilkan status koneksi MongoDB dan apakah `ADMIN_PASSWORD` sudah diset
 (tanpa membocorkan nilainya).

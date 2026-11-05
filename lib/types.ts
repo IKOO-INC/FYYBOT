@@ -7,6 +7,8 @@ export interface SessionDoc {
   status: SessionStatus
   qr?: string | null
   qrUpdatedAt?: number | null
+  qrExpiresAt?: number | null
+  qrSeq?: number
   pairingCode?: string | null
   pairingPhone?: string | null
   me?: {

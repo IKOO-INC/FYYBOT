@@ -35,6 +35,12 @@ export const config = {
   autoDownloadMedia: (process.env.WA_AUTO_MEDIA || 'true') !== 'false',
   historyMessageLimit: Number(process.env.WA_HISTORY_LIMIT || 60),
   logLevel: process.env.WA_LOG_LEVEL || 'warn',
+  // QR lifetime, mengikuti default Baileys 6.7 (lib/Socket/socket.js):
+  // QR pertama hidup 60 detik, QR berikutnya 20 detik.
+  // Jangan set `qrTimeout` di makeWASocket agar kedua angka ini tetap sama.
+  qrTtlFirstMs: Number(process.env.WA_QR_TTL_FIRST_MS || 60_000),
+  qrTtlNextMs: Number(process.env.WA_QR_TTL_NEXT_MS || 20_000),
+  qrSweepMs: Number(process.env.WA_QR_SWEEP_MS || 4000),
 }
 
 export function assertConfig() {

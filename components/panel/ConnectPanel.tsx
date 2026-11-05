@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
 import Avatar from './Avatar'
 import {
@@ -34,6 +34,10 @@ type SessionResponse = {
     startedAt: number | null
     qr: string | null
     qrUpdatedAt: number | null
+    qrExpiresAt: number | null
+    qrExpiresIn: number | null
+    qrTtl: number | null
+    qrSeq: number
   }
 }
 
@@ -45,17 +49,55 @@ const statusMap: Record<string, { label: string; tone: string }> = {
 }
 
 export default function ConnectPanel() {
-  const { data, error, refresh } = usePoll<SessionResponse>('/api/session', 4000)
-  const session = data?.session
   const [phone, setPhone] = useState('')
   const [pairing, setPairing] = useState(false)
   const [code, setCode] = useState<string | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
   const [message, setMessage] = useState<{ kind: 'ok' | 'error'; text: string } | null>(null)
+  const [secondsLeft, setSecondsLeft] = useState(0)
+  const [qrTtl, setQrTtl] = useState(20)
+  const [zoom, setZoom] = useState(false)
+  const lastSeq = useRef<number | null>(null)
+
+  const { data, error, refresh } = usePoll<SessionResponse>('/api/session', 2000)
+  const session = data?.session
+  const connected = Boolean(session?.online)
+
+  // QR dari Baileys berganti tiap ±20 detik (QR pertama 60 detik).
+  // Hitung mundur dihitung lokal, di-reset setiap `qrSeq` berubah.
+  const qrSeq = session?.qrSeq ?? 0
+  const hasQr = Boolean(session?.qr)
+  const qrExpiresIn = session?.qrExpiresIn ?? null
+
+  useEffect(() => {
+    if (!hasQr) {
+      lastSeq.current = null
+      setSecondsLeft(0)
+      return
+    }
+    if (lastSeq.current === qrSeq) return
+    lastSeq.current = qrSeq
+    setSecondsLeft(qrExpiresIn ?? 0)
+    if (session?.qrTtl) setQrTtl(session.qrTtl)
+  }, [hasQr, qrSeq, qrExpiresIn, session?.qrTtl])
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      setSecondsLeft((value) => (value > 0 ? value - 1 : 0))
+    }, 1000)
+    return () => window.clearInterval(timer)
+  }, [])
+
+  useEffect(() => {
+    if (!hasQr) setZoom(false)
+  }, [hasQr])
 
   useEffect(() => {
     if (session?.pairingCode) setCode(session.pairingCode)
   }, [session?.pairingCode])
+
+  const qrExpired = hasQr && secondsLeft <= 0
+  const progress = qrTtl > 0 ? Math.max(0, Math.min(100, (secondsLeft / qrTtl) * 100)) : 0
 
   async function pair() {
     const digits = phone.replace(/[^0-9]/g, '')
@@ -93,9 +135,13 @@ export default function ConnectPanel() {
       })
       if (!res.ok) throw new Error(res.error || 'Aksi gagal dijalankan')
       setCode(null)
+      lastSeq.current = null
       setMessage({
         kind: 'ok',
-        text: name === 'logout' ? 'Sesi WhatsApp diputus dan kredensial dihapus dari MongoDB.' : 'Worker diminta menyambung ulang.',
+        text:
+          name === 'logout'
+            ? 'Sesi WhatsApp diputus dan kredensial dihapus dari MongoDB.'
+            : 'Worker diminta menyambung ulang — QR baru akan muncul beberapa detik lagi.',
       })
       void refresh()
     } catch (err) {
@@ -106,7 +152,6 @@ export default function ConnectPanel() {
   }
 
   const status = statusMap[session?.status || 'disconnected'] || statusMap.disconnected
-  const connected = Boolean(session?.online)
 
   return (
     <div className="wa-pane-2 wa-scroll min-w-0 flex-1 overflow-y-auto">
@@ -119,8 +164,8 @@ export default function ConnectPanel() {
             <h1 className="mt-1.5 text-[22px] font-semibold leading-tight">Tautkan WhatsApp Anda</h1>
             <p className="mt-1 max-w-xl text-[12.5px] leading-relaxed text-[var(--wa-text-soft)]">
               Sama seperti WhatsApp Web: buka WhatsApp di HP → <strong>Perangkat tertaut</strong> →{' '}
-              <strong>Tautkan perangkat</strong>, lalu pindai QR di bawah. Kredensial sesi disimpan di MongoDB
-              sehingga tidak perlu scan ulang setiap kali worker restart.
+              <strong>Tautkan perangkat</strong>, lalu pindai QR di bawah. QR diambil langsung dari event
+              Baileys dan diperbarui otomatis, jadi tidak perlu refresh halaman.
             </p>
           </div>
           <div className="flex items-center gap-2">
@@ -222,31 +267,87 @@ export default function ConnectPanel() {
               </div>
             ) : (
               <div className="flex flex-col items-center gap-3">
-                {session?.qr ? (
+                {hasQr && session?.qr ? (
                   <>
-                    <div className="rounded-xl bg-white p-3 shadow-sm ring-1 ring-black/5">
+                    <button
+                      type="button"
+                      onClick={() => setZoom(true)}
+                      disabled={qrExpired}
+                      className="group relative rounded-xl bg-white p-3 shadow-sm ring-1 ring-black/5 transition hover:ring-[#00a884]/40"
+                      title="Perbesar QR"
+                    >
                       {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img src={session.qr} alt="QR WhatsApp" className="h-56 w-56" />
+                      <img src={session.qr} alt="QR WhatsApp dari Baileys" className="h-56 w-56" />
+                      {qrExpired && (
+                        <span className="absolute inset-0 flex flex-col items-center justify-center gap-1 rounded-xl bg-white/92 text-center text-[11px] font-medium text-[#54656f]">
+                          <RefreshIcon size={16} />
+                          QR kedaluwarsa
+                          <span className="text-[10px] font-normal">menunggu QR baru dari Baileys…</span>
+                        </span>
+                      )}
+                      <span className="absolute bottom-1.5 right-2 rounded bg-black/5 px-1.5 py-0.5 text-[9.5px] text-[#667781] opacity-0 transition group-hover:opacity-100">
+                        klik untuk perbesar
+                      </span>
+                    </button>
+
+                    <div className="w-full max-w-[16rem]">
+                      <div className="flex items-center justify-between text-[10.5px] text-[var(--wa-text-soft)]">
+                        <span className="flex items-center gap-1">
+                          <BoltIcon size={11} />
+                          {qrExpired ? 'kedaluwarsa' : `QR baru dalam ${secondsLeft} dtk`}
+                        </span>
+                        <span>#{qrSeq}</span>
+                      </div>
+                      <div className="mt-1 h-1 w-full overflow-hidden rounded-full bg-[var(--wa-pane-2)]">
+                        <div
+                          className={`h-full rounded-full transition-[width] duration-1000 ease-linear ${
+                            qrExpired ? 'bg-[#e0a800]' : 'bg-[#00a884]'
+                          }`}
+                          style={{ width: `${qrExpired ? 100 : progress}%` }}
+                        />
+                      </div>
                     </div>
+
                     <p className="text-center text-[12px] leading-relaxed text-[var(--wa-text-soft)]">
                       Buka WhatsApp di HP → menu ⋮ → <strong>Perangkat tertaut</strong> →{' '}
                       <strong>Tautkan perangkat</strong>
                       <br />
-                      QR diperbarui otomatis setiap beberapa detik.
+                      QR dari Baileys berganti otomatis tiap ±{qrTtl} detik.
                     </p>
-                    <p className="text-[10.5px] text-[var(--wa-text-soft)]">QR terakhir: {timeAgo(session.qrUpdatedAt)}</p>
+                    <div className="flex flex-wrap items-center justify-center gap-3 text-[10.5px] text-[var(--wa-text-soft)]">
+                      <span>Diperbarui {timeAgo(session.qrUpdatedAt)}</span>
+                      <button
+                        type="button"
+                        onClick={() => void action('restart')}
+                        disabled={busy !== null}
+                        className="inline-flex items-center gap-1 rounded-full border border-[var(--wa-border)] px-2.5 py-1 font-medium text-[var(--wa-text)] transition hover:bg-[var(--wa-pane-2)] disabled:opacity-50"
+                      >
+                        <RefreshIcon size={11} /> {busy === 'restart' ? 'Meminta…' : 'Minta QR baru'}
+                      </button>
+                    </div>
                   </>
                 ) : (
                   <div className="py-6 text-center">
-                    <span className="mx-auto flex h-14 w-14 items-center justify-center rounded-full bg-[var(--wa-pane-2)] text-[var(--wa-text-soft)]">
+                    <span className="mx-auto flex h-14 w-14 animate-pulse items-center justify-center rounded-full bg-[var(--wa-pane-2)] text-[var(--wa-text-soft)]">
                       <QrIcon size={24} />
                     </span>
-                    <p className="mt-3 text-[13.5px] font-medium">QR belum tersedia</p>
+                    <p className="mt-3 flex items-center justify-center gap-2 text-[13.5px] font-medium">
+                      <span className="h-3 w-3 animate-spin rounded-full border-2 border-current border-t-transparent text-[#00a884]" />
+                      Menyiapkan QR dari Baileys…
+                    </p>
                     <p className="mx-auto mt-1 max-w-xs text-[11.5px] leading-relaxed text-[var(--wa-text-soft)]">
                       {session?.workerAlive
-                        ? 'Worker aktif dan sedang menyiapkan QR. Tunggu beberapa detik, halaman ini menyegarkan otomatis.'
-                        : 'Worker Baileys belum berjalan. Nyalakan worker (perintah npm run worker) agar QR muncul di sini.'}
+                        ? 'Worker aktif dan sedang meminta QR baru ke WhatsApp. Halaman ini menyegarkan otomatis tiap 2 detik.'
+                        : 'Worker Baileys belum berjalan. Nyalakan worker (npm run worker) agar QR muncul di sini.'}
                     </p>
+                    <button
+                      type="button"
+                      onClick={() => void action('restart')}
+                      disabled={busy !== null}
+                      className="mt-3 inline-flex items-center gap-1.5 rounded-full border border-[var(--wa-border)] px-3 py-1.5 text-[11.5px] font-medium transition hover:bg-[var(--wa-pane-2)] disabled:opacity-50"
+                    >
+                      <RefreshIcon size={12} /> {busy === 'restart' ? 'Meminta…' : 'Minta QR baru'}
+                    </button>
                   </div>
                 )}
               </div>
@@ -299,6 +400,7 @@ export default function ConnectPanel() {
                 {[
                   { icon: DatabaseIcon, k: 'Penyimpanan sesi', v: 'MongoDB · wa_auth' },
                   { icon: BoltIcon, k: 'Status koneksi', v: session?.status || 'disconnected' },
+                  { icon: QrIcon, k: 'Umur QR (Baileys)', v: `${qrTtl}s · QR #${qrSeq}` },
                   { icon: ShieldIcon, k: 'Worker heartbeat', v: session?.heartbeatAge !== null && session?.heartbeatAge !== undefined ? `${Math.round(session.heartbeatAge / 1000)}s lalu` : '—' },
                   { icon: WifiIcon, k: 'Mulai worker', v: session?.startedAt ? timeAgo(session.startedAt) : '—' },
                 ].map((row) => {
@@ -329,6 +431,31 @@ export default function ConnectPanel() {
           </div>
         </div>
       </div>
+
+      {zoom && session?.qr && (
+        <div
+          className="fixed inset-0 z-50 flex flex-col items-center justify-center gap-4 bg-black/85 p-6"
+          onClick={() => setZoom(false)}
+        >
+          <button
+            type="button"
+            onClick={() => setZoom(false)}
+            className="absolute right-5 top-5 flex h-10 w-10 items-center justify-center rounded-full bg-white/10 text-white"
+            aria-label="Tutup"
+          >
+            <XIcon size={20} />
+          </button>
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={session.qr}
+            alt="QR WhatsApp dari Baileys"
+            className="w-[min(78vw,420px)] rounded-2xl bg-white p-4 shadow-2xl"
+          />
+          <p className="text-center text-[12px] text-white/70">
+            Pindai dari WhatsApp → Perangkat tertaut · QR baru dalam {Math.max(0, secondsLeft)} dtk
+          </p>
+        </div>
+      )}
     </div>
   )
 }
