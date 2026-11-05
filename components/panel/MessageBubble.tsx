@@ -164,13 +164,39 @@ function renderContent(message: MessageDoc, media: MessageDoc['media']) {
 
   switch (media.kind) {
     case 'image':
-      return <ImageBubble jid={message.jid} id={message.id} caption={message.text} width={media.width} height={media.height} />
+      return (
+        <ImageBubble
+          jid={message.jid}
+          id={message.id}
+          caption={message.text}
+          width={media.width}
+          height={media.height}
+          size={media.size}
+        />
+      )
     case 'sticker':
-      return <StickerBubble jid={message.jid} id={message.id} />
+      return <StickerBubble jid={message.jid} id={message.id} size={media.size} />
     case 'video':
-      return <VideoBubble jid={message.jid} id={message.id} caption={message.text} seconds={media.seconds} />
+      return (
+        <VideoBubble
+          jid={message.jid}
+          id={message.id}
+          caption={message.text}
+          seconds={media.seconds}
+          size={media.size}
+        />
+      )
     case 'audio':
-      return <AudioBubble jid={message.jid} id={message.id} seconds={media.seconds} isPtt={media.isPtt} fromMe={message.fromMe} />
+      return (
+        <AudioBubble
+          jid={message.jid}
+          id={message.id}
+          seconds={media.seconds}
+          isPtt={media.isPtt}
+          fromMe={message.fromMe}
+          size={media.size}
+        />
+      )
     case 'document':
       return (
         <DocumentBubble
