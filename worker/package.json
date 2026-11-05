@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "Baileys worker for FYY WhatsApp Admin — keeps the WhatsApp link alive and bridges it to MongoDB",
+  "description": "Baileys worker for FYY WhatsApp Admin \u2014 keeps the WhatsApp link alive and bridges it to MongoDB",
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "start": "tsx src/index.ts",
