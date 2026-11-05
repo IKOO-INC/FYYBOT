@@ -18,6 +18,7 @@ import { ObjectId, type Collection, type Db, type Document } from 'mongodb'
 import { config, assertConfig } from './config'
 import { COL, closeDb, db, ensureIndexes } from './db'
 import { useMongoAuthState, type MongoAuthState } from './auth-state'
+import { backoffDelay } from './backoff'
 import {
   binaryToBuffer,
   messagePreview,
@@ -44,6 +45,11 @@ let commandsRunning = false
 let qrCount = 0
 const LOCK_ID = 'worker'
 let lockFailures = 0
+// Keamanan sesi
+let gaveUp = false
+let expectLogout = false
+let authRejectAt: number[] = []
+const AUTH_REJECT_WINDOW_MS = 10 * 60_000
 
 const contactNames = new Map<string, string>()
 const groupCache = new Map<string, { data: GroupMetadata; ts: number }>()
@@ -201,7 +207,7 @@ async function waitForLock(timeoutMs: number) {
 
 async function waitForSocket(timeoutMs = 20_000) {
   const started = Date.now()
-  while (!sock && Date.now() - started < timeoutMs) {
+  while (!sock && !stopping && Date.now() - started < timeoutMs) {
     await sleep(300)
   }
   if (!sock) throw new Error('Worker belum siap membuat socket WhatsApp. Coba lagi beberapa detik.')
@@ -660,6 +666,12 @@ async function executeCommand(command: Document) {
       return downloadMediaOnDemand({ jid: payload.jid, messageId: payload.messageId })
 
     case 'pair': {
+      // Pastikan socket memang sedang berjalan; kalau worker sempat menyerah,
+      // bangkitkan dulu supaya kode pairing bisa dibuat.
+      if (!sock) {
+        resetBackoff()
+        scheduleReconnect(200)
+      }
       const active = await waitForSocket(12_000)
       if (active.authState.creds.registered) {
         throw new Error('Sesi sudah terdaftar di WhatsApp. Putuskan sesi dulu untuk menautkan ulang.')
@@ -680,12 +692,29 @@ async function executeCommand(command: Document) {
 
     case 'logout': {
       const active = requireSocket()
+      // Tandai logout yang disengaja supaya handler 'close' tidak menganggapnya
+      // sebagai penolakan sesi (401) dan langsung memblokir reconnect.
+      expectLogout = true
       await active.logout().catch(() => null)
-      if (authState) await authState.clear()
+      if (authState) {
+        await authState.flush(3000).catch(() => null)
+        await authState.clear().catch((err) => logger.debug({ err }, 'clear auth failed'))
+      }
       authState = null
       meId = null
-      await writeStatus({ status: 'disconnected', me: null, qr: null, pairingCode: null, connectedAt: null })
-      scheduleReconnect(2500)
+      await writeStatus({
+        status: 'disconnected',
+        me: null,
+        qr: null,
+        qrExpiresAt: null,
+        pairingCode: null,
+        pairingAt: null,
+        pairingExpiresAt: null,
+        connectedAt: null,
+        lastError: null,
+      })
+      resetBackoff()
+      scheduleReconnect(1200)
       return { ok: true }
     }
 
@@ -697,6 +726,9 @@ async function executeCommand(command: Document) {
           /* noop */
         }
       }
+      // Permintaan manual: reset hitungan backoff & status "menyerah".
+      resetBackoff()
+      await writeStatus({ lastError: null }).catch(() => null)
       scheduleReconnect(500)
       return { ok: true }
     }
@@ -707,7 +739,7 @@ async function executeCommand(command: Document) {
 }
 
 async function commandLoop() {
-  if (commandsRunning) return
+  if (commandsRunning || stopping) return
   commandsRunning = true
   try {
     const { commands } = await collections()
@@ -744,16 +776,72 @@ async function commandLoop() {
 /* Connection                                                          */
 /* ------------------------------------------------------------------ */
 
-function scheduleReconnect(delay = 3000) {
+function nextBackoffDelay() {
+  return backoffDelay(reconnectAttempts + 1, {
+    baseMs: 2000,
+    maxMs: config.backoffMaxMs,
+    jitter: 0.2,
+  })
+}
+
+/**
+ * Jadwalkan percobaan koneksi berikutnya.
+ * - tanpa argumen: backoff eksponensial (2s → 4s → 8s … maksimal backoffMaxMs)
+ * - dengan angka: delay tetap, dipakai untuk aksi manual (restart/logout)
+ */
+function scheduleReconnect(delay?: number) {
   if (stopping) return
+  // Sudah menyerah: hanya aksi manual (restart/logout) yang boleh menjadwalkan.
+  if (gaveUp && delay === undefined) return
+  const wait = delay ?? nextBackoffDelay()
   if (reconnectTimer) clearTimeout(reconnectTimer)
   reconnectTimer = setTimeout(() => {
     reconnectTimer = null
+    if (stopping) return
     start().catch((err) => {
       console.error('[worker] gagal memulai ulang:', err)
-      scheduleReconnect(Math.min(30_000, 3000 * (reconnectAttempts + 1)))
+      scheduleReconnect()
     })
-  }, delay)
+  }, wait)
+  log(
+    `menyambung ulang dalam ${Math.round(wait / 1000)}s ` +
+      `(percobaan ${reconnectAttempts + 1}/${config.reconnectMaxAttempts})`,
+  )
+}
+
+/** Reset hitungan backoff — dipakai saat koneksi sukses atau user minta ulang. */
+function resetBackoff() {
+  reconnectAttempts = 0
+  gaveUp = false
+  if (reconnectTimer) {
+    clearTimeout(reconnectTimer)
+    reconnectTimer = null
+  }
+}
+
+/** Berhenti mencoba: worker tetap hidup menunggu perintah panel, lalu coba lagi nanti. */
+function giveUp(message: string) {
+  gaveUp = true
+  log(message)
+  writeStatus({ status: 'close', lastError: message, qr: null, qrExpiresAt: null }).catch(() => null)
+  scheduleGiveUpRetry()
+}
+
+function scheduleGiveUpRetry() {
+  if (stopping) return
+  if (reconnectTimer) clearTimeout(reconnectTimer)
+  const minutes = Math.round(config.retryAfterGiveUpMs / 60_000)
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null
+    if (stopping) return
+    log(`jeda panjang selesai — mencoba menyambung lagi (attempt direset)`)
+    resetBackoff()
+    start().catch(() => scheduleGiveUpRetry())
+  }, config.retryAfterGiveUpMs)
+  log(
+    `berhenti mencoba. Coba lagi otomatis dalam ${minutes} menit, ` +
+      `atau tekan "Minta QR baru" di panel untuk memaksa sekarang.`,
+  )
 }
 
 async function start() {
@@ -762,7 +850,12 @@ async function start() {
   reconnectAttempts += 1
   try {
     const database = await db()
-    if (!authState) authState = await useMongoAuthState(database, config.sessionId)
+    if (!authState) {
+      authState = await useMongoAuthState(database, config.sessionId, {
+        saveDebounceMs: config.saveCredsDebounceMs,
+        onError: (err, context) => logger.debug({ err, context }, 'auth write failed'),
+      })
+    }
 
     const version = await fetchLatestBaileysVersion().catch(() => undefined)
     log(`menghubungkan (${version?.version?.join('.') || 'default'} | attempt ${reconnectAttempts})`)
@@ -823,7 +916,8 @@ async function start() {
         }
       }
       if (connection === 'open') {
-        reconnectAttempts = 0
+        resetBackoff()
+        authRejectAt = []
         qrCount = 0
         meId = sock?.user?.id || null
         const me = {
@@ -849,22 +943,82 @@ async function start() {
         console.log(`\n✅ WhatsApp tersambung sebagai ${me.name || me.number || me.id}. Sesi tersimpan di MongoDB.\n`)
       }
       if (connection === 'close') {
+        if (stopping) return
         meId = null
         const statusCode = (lastDisconnect?.error as Boom | undefined)?.output?.statusCode
         const reason = (lastDisconnect?.error as Error | undefined)?.message || 'koneksi terputus'
-        const loggedOut = statusCode === DisconnectReason.loggedOut
         qrCount = 0
-        await writeStatus({ status: loggedOut ? 'disconnected' : 'close', lastError: reason, qr: null, qrExpiresAt: null })
         log(`koneksi tertutup (${statusCode || '?'}) ${reason}`)
-        if (loggedOut) {
-          if (authState) await authState.clear()
-          authState = null
-          await writeStatus({ me: null, pairingCode: null, connectedAt: null, status: 'disconnected' })
-          // Start a fresh session so a new QR becomes available for relinking.
-          scheduleReconnect(2500)
-        } else {
-          scheduleReconnect(Math.min(20_000, 2000 * Math.max(1, reconnectAttempts)))
+
+        const clearedSession = {
+          me: null,
+          qr: null,
+          qrExpiresAt: null,
+          pairingCode: null,
+          pairingAt: null,
+          pairingExpiresAt: null,
+          connectedAt: null,
         }
+
+        // 1) Sesi diambil alih proses/perangkat lain (440): jangan berebut.
+        if (statusCode === DisconnectReason.connectionReplaced) {
+          await writeStatus({
+            status: 'close',
+            lastError: 'Koneksi WhatsApp diambil alih sesi lain (440). Worker ini berhenti agar tidak bentrok.',
+            qr: null,
+            qrExpiresAt: null,
+          }).catch(() => null)
+          log('keluar karena sesi dipakai proses lain (440) — lock dilepas')
+          await releaseLock().catch(() => null)
+          await closeDb().catch(() => null)
+          process.exit(0)
+        }
+
+        // 2) Sesi ditolak WhatsApp (401/403): hapus state lama, jangan retry berulang.
+        const rejected =
+          statusCode === DisconnectReason.loggedOut || statusCode === DisconnectReason.forbidden
+        if (rejected) {
+          const intended = expectLogout
+          expectLogout = false
+          if (authState) {
+            await authState.flush(3000).catch(() => null)
+            await authState.clear().catch((err) => logger.debug({ err }, 'clear auth failed'))
+          }
+          authState = null
+          authRejectAt = authRejectAt.filter((ts) => Date.now() - ts < AUTH_REJECT_WINDOW_MS)
+
+          if (intended) {
+            await writeStatus({
+              ...clearedSession,
+              status: 'disconnected',
+              lastError: 'Sesi diputus (logout). Pindai QR atau minta pairing code untuk menautkan ulang.',
+            })
+            resetBackoff()
+            scheduleReconnect(1500)
+            return
+          }
+
+          authRejectAt.push(Date.now())
+          const repeated = authRejectAt.length >= 2
+          const message = repeated
+            ? 'WhatsApp menolak sesi berulang kali (401/403). Sesi lama sudah dihapus — tunggu beberapa jam, lalu tautkan ulang lewat panel.'
+            : 'WhatsApp menolak sesi ini (401/403). Sesi lama sudah dihapus; tekan "Minta QR baru" untuk menautkan ulang.'
+          await writeStatus({ ...clearedSession, status: 'disconnected', lastError: message })
+          gaveUp = true
+          log(message)
+          return
+        }
+
+        // 3) Gangguan jaringan/server: backoff eksponensial, berhenti setelah N percobaan.
+        await writeStatus({ status: 'close', lastError: reason, qr: null, qrExpiresAt: null })
+        if (reconnectAttempts >= config.reconnectMaxAttempts) {
+          giveUp(
+            `Gagal menyambung setelah ${config.reconnectMaxAttempts} percobaan (${reason}). ` +
+              'Worker berhenti mencoba sampai diminta ulang dari panel.',
+          )
+          return
+        }
+        scheduleReconnect()
       }
     })
 
@@ -1091,18 +1245,61 @@ async function bootstrap() {
 async function shutdown(signal: string) {
   if (stopping) return
   stopping = true
-  log(`menerima ${signal}, menutup worker…`)
+  log(`menerima ${signal}, menutup worker dengan rapi…`)
+
+  // Jangan biarkan proses menggantung bila socket/Mongo tidak merespons.
+  const watchdog = setTimeout(() => {
+    console.error('[worker] shutdown melebihi batas waktu — keluar paksa')
+    process.exit(1)
+  }, config.shutdownDrainMs + 4000)
+  watchdog.unref?.()
+
   if (heartbeatTimer) clearInterval(heartbeatTimer)
   if (commandTimer) clearInterval(commandTimer)
   if (reconnectTimer) clearTimeout(reconnectTimer)
+  heartbeatTimer = null
+  commandTimer = null
+  reconnectTimer = null
+
+  // 1) Tutup socket supaya tidak ada event/penulisan baru.
   try {
     sock?.end(undefined)
   } catch {
     /* noop */
   }
-  await sleep(400)
-  await releaseLock().catch(() => null)
-  await closeDb().catch(() => null)
+
+  // 2) Tunggu tulisan auth (Signal keys + creds) benar-benar selesai di MongoDB.
+  //    Ini yang mencegah sesi rusak kalau worker dimatikan tepat saat menyimpan.
+  let flushed = true
+  if (authState) {
+    flushed = await authState.flush(config.shutdownDrainMs).catch(() => false)
+    if (!flushed) {
+      log(`peringatan: ${authState.pending()} tulisan auth belum selesai saat shutdown`)
+    }
+    // Simpan creds terakhir (mis. hasil pairing) lalu tunggu sekali lagi.
+    await authState.saveCreds().catch(() => null)
+    await authState.flush(1500).catch(() => false)
+  }
+
+  // 3) Tandai status + lepas lock + tutup koneksi (semua dibatasi waktu,
+  //    supaya shutdown tidak menggantung saat Mongo bermasalah).
+  const finalize = (async () => {
+    await writeStatus({
+      status: 'close',
+      lastError: flushed
+        ? `Worker berhenti (${signal}).`
+        : `Worker berhenti (${signal}) — sebagian data sesi mungkin belum tersimpan.`,
+      qr: null,
+      qrExpiresAt: null,
+      pairingCode: null,
+    }).catch(() => null)
+    await releaseLock().catch(() => null)
+    await closeDb().catch(() => null)
+  })()
+
+  await Promise.race([finalize, sleep(config.shutdownDrainMs + 1000)])
+  clearTimeout(watchdog)
+  log('state tersimpan, worker berhenti.')
   process.exit(0)
 }
 
