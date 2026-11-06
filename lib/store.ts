@@ -123,6 +123,26 @@ async function contactNamesFor(jids: string[]): Promise<Map<string, string>> {
   return map
 }
 
+/** Nama pengirim terakhir per chat 1:1 (cadangan saat wa_contacts kosong). */
+async function latestSenderNames(jids: string[]): Promise<Map<string, string>> {
+  const map = new Map<string, string>()
+  const targets = jids.filter((jid) => jid && !jid.endsWith('@g.us'))
+  if (!targets.length) return map
+  const database = await db()
+  const rows = await database
+    .collection<{ _id: string; name?: string }>(COLLECTIONS.messages)
+    .aggregate<{ _id: string; name?: string }>([
+      { $match: { jid: { $in: targets }, senderName: { $type: 'string' } } },
+      { $sort: { ts: -1 } },
+      { $group: { _id: '$jid', name: { $first: '$senderName' } } },
+    ])
+    .toArray()
+  for (const row of rows) {
+    if (row.name && !NAME_LOOKS_RAW.test(row.name)) map.set(row._id, row.name)
+  }
+  return map
+}
+
 /** Foto profil (data URL) untuk daftar JID — hanya yang sudah tersimpan worker. */
 export async function getAvatars(jids: string[]): Promise<Record<string, string>> {
   const unique = Array.from(new Set(jids.filter(Boolean))).slice(0, 80)
@@ -144,36 +164,47 @@ export async function getAvatars(jids: string[]): Promise<Record<string, string>
  * Minta worker mengambil foto profil yang belum ada / sudah kedaluwarsa.
  * Ada cooldown supaya tidak menembak WhatsApp berulang untuk JID yang sama.
  */
-export async function requestAvatars(jids: string[], max = 12): Promise<number> {
+export async function requestAvatars(jids: string[], max = 24): Promise<number> {
   const unique = Array.from(new Set(jids.filter(Boolean))).slice(0, 80)
   if (!unique.length) return 0
   const database = await db()
   const col = database.collection<ContactDoc>(COLLECTIONS.contacts)
   const now = Date.now()
-  const stale = {
-    $or: [
-      { avatarAt: { $exists: false } },
-      { avatarAt: null },
-      { avatarAt: { $lt: now - AVATAR_TTL_MS } },
-    ],
-  }
 
-  const rows = await col
+  const docs = await col
     .find(
-      { _id: { $in: unique }, ...stale, $and: [{ $or: [{ avatarRequestedAt: { $exists: false } }, { avatarRequestedAt: null }, { avatarRequestedAt: { $lt: now - AVATAR_REQUEST_COOLDOWN_MS } }] }] },
-      { projection: { _id: 1 } },
+      { _id: { $in: unique } },
+      { projection: { _id: 1, avatar: 1, avatarAt: 1, avatarRequestedAt: 1 } },
     )
-    .limit(max)
     .toArray()
+  const byId = new Map(docs.map((doc) => [doc._id, doc]))
 
   let queued = 0
-  for (const row of rows) {
-    const claimed = await col.updateOne(
-      { _id: row._id, ...stale },
-      { $set: { avatarRequestedAt: now } },
-    )
-    if (!claimed.modifiedCount) continue
-    await enqueueCommand('avatar', { jid: row._id })
+  for (const jid of unique) {
+    if (queued >= max) break
+    const doc = byId.get(jid)
+    const hasFreshAvatar = Boolean(doc?.avatar) && Boolean(doc?.avatarAt) && now - Number(doc?.avatarAt) < AVATAR_TTL_MS
+    if (hasFreshAvatar) continue
+    if (doc?.avatarRequestedAt && now - Number(doc.avatarRequestedAt) < AVATAR_REQUEST_COOLDOWN_MS) continue
+
+    try {
+      if (doc) {
+        await col.updateOne({ _id: jid }, { $set: { avatarRequestedAt: now } })
+      } else {
+        // Kontak belum pernah tersimpan: buat dokumen penanda supaya perintah
+        // `avatar` tetap dikirim (dulu kasus ini terlewat dan foto tak pernah muncul).
+        await col.updateOne(
+          { _id: jid },
+          { $set: { avatarRequestedAt: now, updatedAt: now } },
+          { upsert: true },
+        )
+      }
+    } catch (err) {
+      if ((err as { code?: number }).code === 11000) continue
+      throw err
+    }
+
+    await enqueueCommand('avatar', { jid })
     queued += 1
   }
   return queued
@@ -216,10 +247,13 @@ export async function listChats(opts: { filter?: string; q?: string; limit?: num
     .filter((c) => !c.name || NAME_LOOKS_RAW.test(c.name) || /@/.test(c.name))
     .map((c) => c._id)
   const names = await contactNamesFor(needName)
+  const senderNames = await latestSenderNames(
+    needName.filter((jid) => !names.has(jid) && !jid.endsWith('@g.us')),
+  )
 
   return docs.map((c) => {
     const fallback = c.name && !NAME_LOOKS_RAW.test(c.name) ? c.name : null
-    const resolved = fallback || names.get(c._id) || jidToPhone(c._id) || c._id
+    const resolved = fallback || names.get(c._id) || senderNames.get(c._id) || jidToPhone(c._id) || c._id
     return {
     jid: c._id,
     name: resolved,

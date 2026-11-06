@@ -55,6 +55,7 @@ const AUTH_REJECT_WINDOW_MS = 10 * 60_000
 
 const contactNames = new Map<string, string>()
 const chatNameCheckedAt = new Map<string, number>()
+let groupSyncAt = 0
 const groupCache = new Map<string, { data: GroupMetadata; ts: number }>()
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
@@ -297,6 +298,84 @@ async function cachedGroupMetadata(jid: string) {
   } catch {
     return cached?.data
   }
+}
+
+/* ------------------------------------------------------------------ */
+/* Sinkronisasi nama chat (grup + 1:1)                                 */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Ambil semua grup yang diikuti (satu panggilan) lalu isi `wa_chats.name`.
+ * Ini yang membuat grup tidak lagi tampil sebagai angka panjang meski
+ * belum ada pesan baru di grup tersebut.
+ */
+async function syncAllGroupNames(reason: 'open' | 'manual' = 'manual') {
+  if (!sock) return { groups: 0, total: 0, skipped: true }
+  if (reason === 'open' && Date.now() - groupSyncAt < 30 * 60_000) {
+    return { groups: 0, total: 0, skipped: true }
+  }
+  groupSyncAt = Date.now()
+
+  const map = await sock.groupFetchAllParticipating().catch((err) => {
+    logger.debug({ err }, 'groupFetchAllParticipating gagal')
+    return null
+  })
+  if (!map) return { groups: 0, total: 0, skipped: false }
+
+  const groups = Object.values(map).filter((group) => group?.id && group?.subject)
+  if (!groups.length) return { groups: 0, total: 0, skipped: false }
+
+  const { chats } = await collections()
+  const ops = groups.map((group) => ({
+    updateOne: {
+      filter: { _id: group.id },
+      // tanpa upsert: jangan bikin baris chat kosong untuk grup yang belum ada
+      update: { $set: { name: group.subject, isGroup: true, updatedAt: Date.now() } },
+      upsert: false,
+    },
+  }))
+
+  let updated = 0
+  for (let index = 0; index < ops.length; index += 200) {
+    const result = await chats.bulkWrite(ops.slice(index, index + 200), { ordered: false }).catch(() => null)
+    updated += result?.modifiedCount || 0
+  }
+  log(`sinkron nama grup (${reason}): ${updated} diperbarui dari ${groups.length} grup`)
+  return { groups: updated, total: groups.length, skipped: false }
+}
+
+/** Isi nama chat 1:1 dari `pushName` pesan terakhir bila wa_contacts kosong. */
+async function backfillNamesFromMessages(limit = 400) {
+  const { messages, chats } = await collections()
+  const rows = await messages
+    .aggregate<{ _id: string; name?: string }>([
+      { $match: { senderName: { $type: 'string' }, jid: { $not: /@g\.us$/ } } },
+      { $sort: { ts: -1 } },
+      { $group: { _id: '$jid', name: { $first: '$senderName' } } },
+      { $limit: limit },
+    ])
+    .toArray()
+
+  const ops = rows
+    .filter((row) => row._id && row.name && !/^\d+$/.test(String(row.name)))
+    .map((row) => ({
+      updateOne: {
+        filter: {
+          _id: row._id,
+          $or: [{ name: { $exists: false } }, { name: null }, { name: '' }, { name: /^\d+$/ }],
+        },
+        update: { $set: { name: String(row.name) } },
+      },
+    }))
+
+  if (!ops.length) return { updated: 0, total: rows.length }
+  let updated = 0
+  for (let index = 0; index < ops.length; index += 200) {
+    const result = await chats.bulkWrite(ops.slice(index, index + 200), { ordered: false }).catch(() => null)
+    updated += result?.modifiedCount || 0
+  }
+  log(`backfill nama 1:1 dari pesan: ${updated} chat`)
+  return { updated, total: rows.length }
 }
 
 /* ------------------------------------------------------------------ */
@@ -747,6 +826,13 @@ async function executeCommand(command: Document) {
     case 'download-media':
       return downloadMediaOnDemand({ jid: payload.jid, messageId: payload.messageId })
 
+    case 'sync-names': {
+      await waitForSocket(8000)
+      const groups = await syncAllGroupNames('manual')
+      const chatsBackfill = await backfillNamesFromMessages()
+      return { ok: true, groups, chats: chatsBackfill }
+    }
+
     case 'avatar': {
       const active = await waitForSocket(8000)
       const target = String(payload.jid || '')
@@ -1052,6 +1138,16 @@ async function start() {
         })
         log('tersambung sebagai', me.number || me.id)
         console.log(`\n✅ WhatsApp tersambung sebagai ${me.name || me.number || me.id}. Sesi tersimpan di MongoDB.\n`)
+
+        // Sinkronkan nama grup + nama 1:1 di latar belakang (tidak menahan koneksi).
+        void (async () => {
+          try {
+            await syncAllGroupNames('open')
+            await backfillNamesFromMessages()
+          } catch (err) {
+            logger.debug({ err }, 'sinkron nama saat connect gagal')
+          }
+        })()
       }
       if (connection === 'close') {
         if (stopping) return

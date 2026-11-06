@@ -92,6 +92,7 @@ export type CommandType =
   | 'react'
   | 'download-media'
   | 'avatar'
+  | 'sync-names'
   | 'pair'
   | 'logout'
   | 'restart'

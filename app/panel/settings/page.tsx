@@ -1,6 +1,7 @@
 import type { Metadata } from 'next'
 import Link from 'next/link'
 import LogoutButton from '@/components/panel/LogoutButton'
+import SyncNamesButton from '@/components/panel/SyncNamesButton'
 import { BoltIcon, DatabaseIcon, GlobeIcon, LockIcon, QrIcon, WifiIcon } from '@/components/icons'
 import { adminPassword } from '@/lib/auth'
 import { COLLECTIONS, getDb, mongoConfigured, mongoUriKind } from '@/lib/mongo'
@@ -115,6 +116,19 @@ export default async function SettingsPage() {
               {session.connectedAt ? ` · sejak ${timeAgo(session.connectedAt)}` : ''}
             </p>
           )}
+        </section>
+
+        <section className="mt-6 rounded-2xl border border-[var(--wa-border)] bg-[var(--wa-pane)] p-5">
+          <h2 className="text-[13.5px] font-semibold">Nama &amp; foto kontak</h2>
+          <p className="mt-1.5 text-[11.5px] leading-relaxed text-[var(--wa-text-soft)]">
+            Kalau masih ada chat yang tampil sebagai nomor panjang, klik tombol ini. Worker akan mengambil nama
+            semua grup sekaligus (<span className="font-medium">groupFetchAllParticipating</span>) dan mengisi nama
+            chat 1:1 dari nama pengirim terakhir. Foto profil diambil terpisah saat panel membuka daftar chat
+            (cache 6 jam, cooldown 10 menit per kontak).
+          </p>
+          <div className="mt-3">
+            <SyncNamesButton />
+          </div>
         </section>
 
         <section className="mt-6 rounded-2xl border border-[var(--wa-border)] bg-[var(--wa-pane)] p-5">
