@@ -139,8 +139,12 @@ export default function Inbox() {
   )
 
   // Foto profil: diambil bertahap untuk chat yang terlihat saja.
+  const avatarKey = useMemo(
+    () => chats.slice(0, 40).map((chat) => chat.jid).join(','),
+    [chats],
+  )
   useEffect(() => {
-    const jids = chats.slice(0, 40).map((chat) => chat.jid)
+    const jids = avatarKey ? avatarKey.split(',') : []
     if (!jids.length) return
     let alive = true
     const load = async () => {
@@ -162,7 +166,7 @@ export default function Inbox() {
       alive = false
       window.clearInterval(timer)
     }
-  }, [chats])
+  }, [avatarKey])
 
   const session = sessionData?.session
   const me = session?.me || data?.me || null
@@ -318,6 +322,11 @@ export default function Inbox() {
                       <p className="flex min-w-0 items-center gap-1.5 truncate text-[14px]">
                         {chat.pinned ? <PinIcon size={12} className="text-[var(--wa-text-soft)]" /> : null}
                         <span className="truncate">{chat.name}</span>
+                        {!chat.isGroup && prettyPhone(chat.jid) && prettyPhone(chat.jid) !== chat.name ? (
+                          <span className="shrink-0 text-[10.5px] font-normal text-[var(--wa-text-soft)]">
+                            {prettyPhone(chat.jid)}
+                          </span>
+                        ) : null}
                       </p>
                       <span
                         className={`shrink-0 text-[10.5px] ${

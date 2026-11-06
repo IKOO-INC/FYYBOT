@@ -107,6 +107,69 @@ const AVATAR_TTL_MS = 6 * 60 * 60_000
 const AVATAR_REQUEST_COOLDOWN_MS = 10 * 60_000
 const NAME_LOOKS_RAW = /^[\d\-+\s]+$/
 
+/* ------------------------------------------------------------------ */
+/* Alias JID: WhatsApp memberi ID internal (@lid) di samping nomor      */
+/* (@s.whatsapp.net) untuk orang yang sama. Semua pembacaan di bawah    */
+/* memperlakukan keduanya sebagai SATU percakapan.                      */
+/* ------------------------------------------------------------------ */
+
+type AliasDoc = { _id: string; alias?: string | null; updatedAt?: number }
+
+export function isLidJid(jid: string) {
+  return jid.endsWith('@lid')
+}
+
+/** Semua JID yang merujuk orang yang sama (termasuk dirinya sendiri). */
+export async function aliasJids(jid: string): Promise<string[]> {
+  if (!jid) return []
+  const database = await db()
+  const rows = await database
+    .collection<AliasDoc>(COLLECTIONS.jidMap)
+    .find({ _id: { $in: [jid] } }, { projection: { alias: 1 } })
+    .toArray()
+  const out = new Set<string>([jid])
+  for (const row of rows) {
+    if (row.alias) out.add(row.alias)
+  }
+  // satu hop lagi (kalau peta tersimpan terbalik)
+  if (out.size > 1) {
+    const more = await database
+      .collection<AliasDoc>(COLLECTIONS.jidMap)
+      .find({ _id: { $in: Array.from(out) } }, { projection: { alias: 1 } })
+      .toArray()
+    for (const row of more) if (row.alias) out.add(row.alias)
+  }
+  return Array.from(out).slice(0, 4)
+}
+
+/** JID yang dipakai untuk mengirim: LID bila ada (paling cepat sampai). */
+export async function preferredJid(jid: string): Promise<string> {
+  const all = await aliasJids(jid)
+  return all.find(isLidJid) || jid
+}
+
+/** Grup baris chat berdasarkan orang yang sama. */
+async function aliasGroups(jids: string[]): Promise<Map<string, string>> {
+  const map = new Map<string, string>() // jid → canonical
+  if (!jids.length) return map
+  const database = await db()
+  const rows = await database
+    .collection<AliasDoc>(COLLECTIONS.jidMap)
+    .find({ _id: { $in: jids } }, { projection: { alias: 1 } })
+    .toArray()
+  const direct = new Map(rows.filter((r) => r.alias).map((r) => [r._id, String(r.alias)]))
+
+  for (const jid of jids) {
+    if (isLidJid(jid)) {
+      map.set(jid, jid)
+      continue
+    }
+    const alias = direct.get(jid)
+    map.set(jid, alias && isLidJid(alias) ? alias : jid)
+  }
+  return map
+}
+
 /** Nama kontak yang tersimpan worker, dipakai saat wa_chats belum punya nama. */
 async function contactNamesFor(jids: string[]): Promise<Map<string, string>> {
   const map = new Map<string, string>()
@@ -147,15 +210,28 @@ async function latestSenderNames(jids: string[]): Promise<Map<string, string>> {
 export async function getAvatars(jids: string[]): Promise<Record<string, string>> {
   const unique = Array.from(new Set(jids.filter(Boolean))).slice(0, 80)
   if (!unique.length) return {}
+
+  // Foto bisa tersimpan di JID nomor maupun LID — cari di keduanya.
+  const expanded = new Map<string, string[]>()
+  for (const jid of unique) expanded.set(jid, await aliasJids(jid))
+  const lookup = Array.from(new Set(Array.from(expanded.values()).flat()))
+
   const database = await db()
   const rows = await database
     .collection<ContactDoc>(COLLECTIONS.contacts)
-    .find({ _id: { $in: unique }, avatar: { $type: 'string' } }, { projection: { avatar: 1, avatarMime: 1 } })
+    .find({ _id: { $in: lookup }, avatar: { $type: 'string' } }, { projection: { avatar: 1, avatarMime: 1 } })
     .toArray()
-  const out: Record<string, string> = {}
+
+  const byJid = new Map<string, string>()
   for (const row of rows) {
     if (!row.avatar) continue
-    out[row._id] = `data:${row.avatarMime || 'image/jpeg'};base64,${row.avatar}`
+    byJid.set(row._id, `data:${row.avatarMime || 'image/jpeg'};base64,${row.avatar}`)
+  }
+
+  const out: Record<string, string> = {}
+  for (const [jid, aliases] of expanded) {
+    const found = aliases.map((alias) => byJid.get(alias)).find(Boolean)
+    if (found) out[jid] = found
   }
   return out
 }
@@ -243,49 +319,99 @@ export async function listChats(opts: { filter?: string; q?: string; limit?: num
     .limit(Math.min(limit, 300))
     .toArray()
 
-  const needName = docs
-    .filter((c) => !c.name || NAME_LOOKS_RAW.test(c.name) || /@/.test(c.name))
-    .map((c) => c._id)
+  const canonicalOf = await aliasGroups(docs.map((doc) => doc._id))
+
+  // Gabungkan baris yang orangnya sama (nomor + LID) menjadi satu percakapan.
+  const grouped = new Map<string, { doc: ChatDoc; jids: string[] }>()
+  for (const doc of docs) {
+    const canonical = canonicalOf.get(doc._id) || doc._id
+    const existing = grouped.get(canonical)
+    if (!existing) {
+      grouped.set(canonical, { doc: { ...doc }, jids: [doc._id] })
+      continue
+    }
+    existing.jids.push(doc._id)
+    const base = existing.doc
+    // unread jangan dijumlah (bisa dobel) — ambil yang terbesar
+    base.unread = Math.max(base.unread || 0, doc.unread || 0)
+    base.archived = Boolean(base.archived) && Boolean(doc.archived)
+    base.pinned = Math.max(base.pinned || 0, doc.pinned || 0)
+    if ((doc.lastTs || 0) > (base.lastTs || 0)) {
+      base.lastTs = doc.lastTs
+      base.lastText = doc.lastText
+      base.lastFromMe = doc.lastFromMe
+      base.lastType = doc.lastType
+    }
+    if (!base.name || NAME_LOOKS_RAW.test(String(base.name))) {
+      if (doc.name && !NAME_LOOKS_RAW.test(doc.name)) base.name = doc.name
+    }
+  }
+
+  const rows = Array.from(grouped.entries()).map(([canonical, value]) => ({ canonical, ...value }))
+  const allJids = rows.flatMap((row) => row.jids)
+
+  const needName = allJids.filter((jid) => {
+    const row = rows.find((item) => item.jids.includes(jid))
+    return !row?.doc.name || NAME_LOOKS_RAW.test(String(row.doc.name))
+  })
   const names = await contactNamesFor(needName)
   const senderNames = await latestSenderNames(
     needName.filter((jid) => !names.has(jid) && !jid.endsWith('@g.us')),
   )
 
-  return docs.map((c) => {
-    const fallback = c.name && !NAME_LOOKS_RAW.test(c.name) ? c.name : null
-    const resolved = fallback || names.get(c._id) || senderNames.get(c._id) || jidToPhone(c._id) || c._id
+  return rows.map(({ canonical, doc, jids }) => {
+    const usable = doc.name && !NAME_LOOKS_RAW.test(doc.name) ? doc.name : null
+    const contactName = jids.map((jid) => names.get(jid)).find(Boolean) || null
+    const senderName = jids.map((jid) => senderNames.get(jid)).find(Boolean) || null
+    const phone = jids.map((jid) => jidToPhone(jid)).find(Boolean) || jidToPhone(canonical)
     return {
-    jid: c._id,
-    name: resolved,
-    isGroup: Boolean(c.isGroup),
-    unread: c.unread || 0,
-    lastTs: c.lastTs || 0,
-    lastText: c.lastText || '',
-    lastFromMe: Boolean(c.lastFromMe),
-    lastType: c.lastType || 'chat',
-    pinned: c.pinned || 0,
-    archived: Boolean(c.archived),
+      jid: canonical,
+      jids,
+      name: usable || contactName || senderName || phone || canonical,
+      isGroup: Boolean(doc.isGroup),
+      unread: doc.unread || 0,
+      lastTs: doc.lastTs || 0,
+      lastText: doc.lastText || '',
+      lastFromMe: Boolean(doc.lastFromMe),
+      lastType: doc.lastType || 'chat',
+      pinned: doc.pinned || 0,
+      archived: Boolean(doc.archived),
     }
   })
 }
 
 export async function getChat(jid: string): Promise<ChatSummary | null> {
   const database = await db()
-  const c = await database.collection<ChatDoc>(COLLECTIONS.chats).findOne({ _id: jid })
-  if (!c) return null
-  const usable = c.name && !NAME_LOOKS_RAW.test(c.name) ? c.name : null
-  const fromContact = usable ? null : (await contactNamesFor([jid])).get(jid) || null
+  const jids = await aliasJids(jid)
+  const canonical = isLidJid(jid) ? jid : jids.find(isLidJid) || jid
+  const docs = await database
+    .collection<ChatDoc>(COLLECTIONS.chats)
+    .find({ _id: { $in: jids } })
+    .toArray()
+  if (!docs.length) return null
+
+  const latest = docs.reduce((best, doc) => ((doc.lastTs || 0) > (best.lastTs || 0) ? doc : best), docs[0])
+  const named = docs.find((doc) => doc.name && !NAME_LOOKS_RAW.test(doc.name))
+  const names = await contactNamesFor(jids.filter((item) => !named))
+  const contactName = jids.map((item) => names.get(item)).find(Boolean) || null
+  const senderNames = await latestSenderNames(
+    jids.filter((item) => !contactName && !item.endsWith('@g.us')),
+  )
+  const senderName = jids.map((item) => senderNames.get(item)).find(Boolean) || null
+  const phone = jids.map((item) => jidToPhone(item)).find(Boolean) || jidToPhone(canonical)
+
   return {
-    jid: c._id,
-    name: usable || fromContact || jidToPhone(c._id) || c._id,
-    isGroup: Boolean(c.isGroup),
-    unread: c.unread || 0,
-    lastTs: c.lastTs || 0,
-    lastText: c.lastText || '',
-    lastFromMe: Boolean(c.lastFromMe),
-    lastType: c.lastType || 'chat',
-    pinned: c.pinned || 0,
-    archived: Boolean(c.archived),
+    jid: canonical,
+    jids,
+    name: named?.name || contactName || senderName || phone || canonical,
+    isGroup: docs.some((doc) => doc.isGroup),
+    unread: Math.max(...docs.map((doc) => doc.unread || 0)),
+    lastTs: latest.lastTs || 0,
+    lastText: latest.lastText || '',
+    lastFromMe: Boolean(latest.lastFromMe),
+    lastType: latest.lastType || 'chat',
+    pinned: Math.max(...docs.map((doc) => doc.pinned || 0)),
+    archived: docs.every((doc) => Boolean(doc.archived)),
   }
 }
 
@@ -294,13 +420,14 @@ export async function listMessages(
   opts: { before?: number; after?: number; limit?: number } = {},
 ): Promise<{ messages: MessageDoc[]; hasMore: boolean }> {
   const database = await db()
+  const jids = await aliasJids(jid)
 
   // Mode "delta": hanya pesan yang lebih baru dari `after` (untuk polling
   // ringan — tidak perlu mengangkut ulang 40 pesan setiap 2 detik).
   if (opts.after) {
     const docs = await database
       .collection<MessageDoc>(COLLECTIONS.messages)
-      .find({ jid, ts: { $gt: opts.after } })
+      .find({ jid: { $in: jids }, ts: { $gt: opts.after } })
       .sort({ ts: 1 })
       .limit(Math.min(opts.limit || 100, 200))
       .toArray()
@@ -308,7 +435,7 @@ export async function listMessages(
   }
 
   const limit = Math.min(opts.limit || 40, 100)
-  const query: Record<string, unknown> = { jid }
+  const query: Record<string, unknown> = { jid: { $in: jids } }
   if (opts.before) query.ts = { $lt: opts.before }
   const docs = await database
     .collection<MessageDoc>(COLLECTIONS.messages)

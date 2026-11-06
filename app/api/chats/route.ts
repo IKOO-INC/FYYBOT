@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server'
 import { mongoError, requireAuth } from '@/lib/api'
-import { countUnread, listChats, getSessionView } from '@/lib/store'
+import { listChats, getSessionView } from '@/lib/store'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -16,7 +16,9 @@ export async function GET(request: Request) {
       q: url.searchParams.get('q') || '',
       limit: Number(url.searchParams.get('limit') || 200),
     })
-    const [session, unread] = await Promise.all([getSessionView(), countUnread()])
+    const session = await getSessionView()
+    // Dihitung dari daftar yang sudah digabung (LID + nomor) supaya tidak dobel.
+    const unread = chats.reduce((total, chat) => total + (chat.unread || 0), 0)
     return NextResponse.json(
       {
         ok: true,

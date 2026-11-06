@@ -3,7 +3,7 @@ import { ObjectId } from 'mongodb'
 import { badRequest, mongoError, requireAuth } from '@/lib/api'
 import { COLLECTIONS } from '@/lib/mongo'
 import { getDb } from '@/lib/mongo'
-import { enqueueCommand, getMediaDoc, listMessages } from '@/lib/store'
+import { aliasJids, enqueueCommand, getMediaDoc, listMessages } from '@/lib/store'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -66,9 +66,11 @@ export async function GET(request: Request) {
     const id = url.searchParams.get('id') || ''
     if (!jid || !id) return badRequest('jid dan id wajib diisi')
 
-    const msgId = `${jid}:${id}`
-    const media = await getMediaDoc(msgId)
-    if (media && media.data) {
+    // Media bisa di-cache di bawah JID nomor maupun LID — cek semua alias.
+    const jids = await aliasJids(jid)
+    for (const candidate of jids) {
+      const media = await getMediaDoc(`${candidate}:${id}`)
+      if (!media?.data) continue
       const buffer = Buffer.from(String(media.data), 'base64')
       return new NextResponse(new Uint8Array(buffer), {
         headers: {
@@ -83,7 +85,7 @@ export async function GET(request: Request) {
     const messages = await listMessages(jid, { limit: 100 })
     const msg = messages.messages.find((m) => m.id === id)
     await enqueueCommand('download-media', {
-      jid,
+      jid: msg?.jid || jid,
       messageId: id,
       fromMe: Boolean(msg?.fromMe),
       mediaKind: msg?.media?.kind || 'document',

@@ -55,6 +55,7 @@ export const COLLECTIONS = {
   commands: 'wa_commands',
   media: 'wa_media',
   uploads: 'wa_uploads',
+  jidMap: 'wa_jid_map',
 } as const
 
 export async function ensureIndexes(db: Db) {
@@ -64,5 +65,6 @@ export async function ensureIndexes(db: Db) {
     db.collection(COLLECTIONS.chats).createIndex({ lastTs: -1 }).catch(() => null),
     db.collection(COLLECTIONS.commands).createIndex({ status: 1, createdAt: 1 }).catch(() => null),
     db.collection(COLLECTIONS.uploads).createIndex({ createdAt: 1 }, { expireAfterSeconds: 60 * 60 * 24 }).catch(() => null),
+    db.collection(COLLECTIONS.jidMap).createIndex({ updatedAt: -1 }).catch(() => null),
   ])
 }

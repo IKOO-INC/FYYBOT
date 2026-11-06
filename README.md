@@ -584,3 +584,27 @@ Catatan penting: file JSON ini hidup di PC tempat worker berjalan. Panel di Verc
 buka chat datang dari paginasi + delta polling, bukan dari file JSON. Snapshot berguna
 untuk arsip, pindah server, atau dibuka dengan editor/script apa pun tanpa MongoDB.
 Matikan dengan `WA_CHAT_JSON=false`.
+
+---
+
+## Satu orang = satu percakapan (LID ↔ nomor)
+
+WhatsApp memberi dua identitas untuk orang yang sama: nomor (`628xxx@s.whatsapp.net`)
+dan ID internal (`…@lid`). Dulu keduanya muncul sebagai dua baris chat.
+
+- Worker menyimpan pasangan ID di koleksi **`wa_jid_map`** (dua arah), diambil dari:
+  metadata tiap pesan (`senderLid`/`senderPn`, `participantLid`/`participantPn`,
+  `remoteJidAlt`), event `contacts.upsert/update` (field `lid`/`jid`), dan
+  `onWhatsApp()` per 20 JID saat connect / saat tombol sinkron ditekan.
+- Panel menggabungkan baris chat yang orangnya sama (`listChats`), lalu membaca pesan
+  dari **semua** alias (`listMessages` memakai `$in`) sehingga riwayat LID dan nomor
+  tampil dalam satu percakapan.
+- Unread tidak dijumlah (bisa dobel) — dipakai nilai terbesar.
+- Foto profil dan nama dicari di semua alias, jadi foto yang tersimpan untuk nomor
+  tetap tampil pada baris versi LID (dan sebaliknya).
+- Pengiriman (`send`, `react`, `read`, `typing`) diarahkan ke **LID** bila diketahui,
+  karena pengiriman lewat nomor bisa tertunda. Worker tetap mencoba alias lain bila
+  pengiriman gagal.
+
+Kalau masih ada baris ganda: buka Pengaturan → **Sinkronkan nama & foto** (sekarang juga
+memetakan LID↔nomor dan melaporkan jumlahnya).
