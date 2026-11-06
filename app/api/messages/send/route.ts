@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server'
 import { badRequest, mongoError, requireAuth } from '@/lib/api'
-import { enqueueCommand, waitForCommand } from '@/lib/store'
+import { enqueueCommand, preferredJid, waitForCommand } from '@/lib/store'
 
 export const runtime = 'nodejs'
 
@@ -10,9 +10,11 @@ export async function POST(request: Request) {
 
   try {
     const body = (await request.json()) as { jid?: string; text?: string }
-    const jid = String(body.jid || '')
+    const rawJid = String(body.jid || '')
+    if (!rawJid) return badRequest('jid wajib diisi')
+    // Kirim lewat LID bila ada — pengiriman ke nomor kadang tertunda.
+    const jid = await preferredJid(rawJid)
     const text = String(body.text || '')
-    if (!jid) return badRequest('jid wajib diisi')
     if (!text.trim()) return badRequest('Pesan kosong')
 
     const commandId = await enqueueCommand('send-text', { jid, text })

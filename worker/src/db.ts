@@ -11,6 +11,7 @@ export const COL = {
   media: 'wa_media',
   uploads: 'wa_uploads',
   locks: 'wa_locks',
+  jidMap: 'wa_jid_map',
 } as const
 
 let clientPromise: Promise<MongoClient> | null = null
@@ -45,5 +46,6 @@ export async function ensureIndexes() {
     database.collection(COL.chats).createIndex({ lastTs: -1 }),
     database.collection(COL.commands).createIndex({ status: 1, createdAt: 1 }),
     database.collection(COL.media).createIndex({ createdAt: 1 }, { expireAfterSeconds: 60 * 60 * 24 * 14 }),
+    database.collection(COL.jidMap).createIndex({ updatedAt: -1 }),
   ])
 }

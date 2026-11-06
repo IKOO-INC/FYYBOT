@@ -110,6 +110,8 @@ export interface CommandDoc {
 }
 
 export interface ChatSummary {
+  /** Semua JID yang merujuk ke orang yang sama (nomor + LID). */
+  jids?: string[]
   jid: string
   name: string
   isGroup: boolean

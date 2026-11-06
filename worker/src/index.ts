@@ -82,6 +82,7 @@ async function collections(): Promise<{
   commands: Collection<any>
   media: Collection<any>
   uploads: Collection<any>
+  jidMap: Collection<any>
 }> {
   const database = await db()
   return {
@@ -93,6 +94,7 @@ async function collections(): Promise<{
     commands: database.collection(COL.commands),
     media: database.collection(COL.media),
     uploads: database.collection(COL.uploads),
+    jidMap: database.collection(COL.jidMap),
   }
 }
 
@@ -272,6 +274,62 @@ async function touchChat(opts: {
   await chats.updateOne({ _id: opts.jid }, update, { upsert: true })
 }
 
+function isLidJid(jid: string | null | undefined): boolean {
+  return typeof jid === 'string' && jid.endsWith('@lid')
+}
+
+/**
+ * Simpan pasangan JID: WhatsApp memberi ID internal `@lid` di samping nomor
+ * `@s.whatsapp.net`. Keduanya orang yang sama — panel memakainya untuk
+ * menggabungkan dua baris chat menjadi satu dan mencari nama/foto di keduanya.
+ */
+async function rememberJidAlias(a?: string | null, b?: string | null) {
+  if (!a || !b || a === b) return
+  if (!a.includes('@') || !b.includes('@')) return
+  if (isLidJid(a) === isLidJid(b)) return
+  const now = Date.now()
+  try {
+    const { jidMap } = await collections()
+    await jidMap.bulkWrite(
+      [
+        { updateOne: { filter: { _id: a }, update: { $set: { alias: b, updatedAt: now } }, upsert: true } },
+        { updateOne: { filter: { _id: b }, update: { $set: { alias: a, updatedAt: now } }, upsert: true } },
+      ],
+      { ordered: false },
+    )
+  } catch (err) {
+    logger.debug({ err }, 'simpan alias jid gagal')
+  }
+}
+
+/** JID alternatif (LID ↔ nomor) untuk satu orang. */
+async function aliasTargets(jid: string): Promise<string[]> {
+  try {
+    const { jidMap } = await collections()
+    const row = await jidMap.findOne({ _id: jid })
+    const out = [jid]
+    if (row?.alias && String(row.alias) !== jid) out.push(String(row.alias))
+    return out
+  } catch {
+    return [jid]
+  }
+}
+
+/** Kirim ke JID utama, lalu coba aliasnya bila gagal. */
+async function sendWithFallback(active: WASocket, jid: string, content: never) {
+  const targets = await aliasTargets(jid)
+  let lastError: unknown = null
+  for (const target of targets) {
+    try {
+      return await active.sendMessage(target, content)
+    } catch (err) {
+      lastError = err
+      logger.debug({ err, target }, 'kirim gagal, coba alias berikutnya')
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error('Gagal mengirim pesan')
+}
+
 async function rememberContact(jid: string, name?: string | null) {
   if (!jid || !name) return
   contactNames.set(jid, name)
@@ -342,6 +400,48 @@ async function syncAllGroupNames(reason: 'open' | 'manual' = 'manual') {
   }
   log(`sinkron nama grup (${reason}): ${updated} diperbarui dari ${groups.length} grup`)
   return { groups: updated, total: groups.length, skipped: false }
+}
+
+/**
+ * Bangun peta LID ↔ nomor untuk chat yang sudah ada, memakai `onWhatsApp`
+ * (dipanggil per 20 JID dengan jeda supaya tidak dianggap spam).
+ */
+async function syncJidAliases(limit = 200) {
+  if (!sock) return { mapped: 0, checked: 0 }
+  const { chats, jidMap } = await collections()
+
+  const docs = await chats
+    .find({ _id: { $regex: '@s\\.whatsapp\\.net$' } }, { projection: { _id: 1 } })
+    .sort({ lastTs: -1 })
+    .limit(limit)
+    .toArray()
+  const ids = docs.map((doc) => String(doc._id)).filter(Boolean)
+  if (!ids.length) return { mapped: 0, checked: 0 }
+
+  const known = await jidMap.find({ _id: { $in: ids } }, { projection: { alias: 1 } }).toArray()
+  const knownSet = new Set(known.filter((row) => row.alias).map((row) => String(row._id)))
+  const pending = ids.filter((id) => !knownSet.has(id))
+
+  let mapped = 0
+  for (let index = 0; index < pending.length; index += 20) {
+    const batch = pending.slice(index, index + 20)
+    const result = await sock.onWhatsApp(...batch).catch(() => null)
+    if (result) {
+      for (const item of result) {
+        const lidRaw = typeof item?.lid === 'string' ? item.lid : null
+        const jidRaw = typeof item?.jid === 'string' ? item.jid : null
+        if (!lidRaw || !jidRaw) continue
+        const lid = lidRaw.includes('@') ? lidRaw : `${lidRaw}@lid`
+        await rememberJidAlias(lid, jidRaw)
+        mapped += 1
+      }
+    }
+    // jeda manusiawi antar batch
+    if (index + 20 < pending.length) await new Promise((resolve) => setTimeout(resolve, 1200))
+  }
+
+  if (mapped) log(`peta LID↔nomor: ${mapped} chat`)
+  return { mapped, checked: pending.length }
 }
 
 /** Isi nama chat 1:1 dari `pushName` pesan terakhir bila wa_contacts kosong. */
@@ -547,8 +647,33 @@ async function storeMessage(message: WAMessage, opts: { notify?: boolean; histor
   const participant = message.key.participant || (isGroup ? null : fromMe ? meId : jid)
   const senderName = message.pushName || contactNames.get(participant || jid) || null
 
+  // Pemetaan LID ↔ nomor dari metadata pesan (Baileys 6.7+ mengisi field ini).
+  const keyMeta = message.key as typeof message.key & {
+    senderLid?: string
+    senderPn?: string
+    participantLid?: string
+    participantPn?: string
+    remoteJidAlt?: string
+  }
+  const pairs: Array<[string | undefined, string | undefined]> = [
+    [keyMeta.senderLid, keyMeta.senderPn],
+    [keyMeta.participantLid, keyMeta.participantPn],
+    [message.key.remoteJid || undefined, keyMeta.remoteJidAlt],
+  ]
+  if (isLidJid(jid) && keyMeta.senderPn) pairs.push([jid, keyMeta.senderPn])
+  for (const [left, right] of pairs) void rememberJidAlias(left, right)
+
   if (!fromMe && message.pushName && participant && !isGroup) {
     await rememberContact(participant, message.pushName)
+    // Simpan nama untuk aliasnya juga, supaya baris chat versi LID/nomor sama-sama bernama.
+    const alias = isLidJid(participant) ? keyMeta.senderPn : keyMeta.senderLid
+    if (alias) await rememberContact(alias, message.pushName)
+    for (const target of [participant, alias].filter(Boolean) as string[]) {
+      await chats.updateOne(
+        { _id: target, $or: [{ name: { $exists: false } }, { name: null }, { name: '' }, { name: /^\d+$/ }] },
+        { $set: { name: message.pushName } },
+      ).catch(() => null)
+    }
   }
 
   const docId = `${jid}:${id}`
@@ -681,6 +806,8 @@ function assertOnline() {
 
 async function persistSentMessage(sent: WAMessage, fallback: { text?: string; type?: string }) {
   if (!sent?.key?.id || !sent.key.remoteJid) return
+  const sentMeta = sent.key as typeof sent.key & { remoteJidAlt?: string; senderLid?: string }
+  if (sentMeta.remoteJidAlt) void rememberJidAlias(String(sent.key.remoteJid), sentMeta.remoteJidAlt)
   const info = normalizeMessage(sent.message)
   const ts = messageTimestamp(sent)
   const { messages, chats } = await collections()
@@ -749,7 +876,9 @@ async function executeCommand(command: Document) {
   switch (type) {
     case 'send-text': {
       const active = assertOnline()
-      const sent = (await active.sendMessage(payload.jid, { text: String(payload.text || '') }))!
+      const sent = (await sendWithFallback(active, String(payload.jid), {
+        text: String(payload.text || ''),
+      } as never))!
       await persistSentMessage(sent, { text: payload.text, type: 'chat' })
       return { messageId: sent?.key?.id || null }
     }
@@ -773,7 +902,7 @@ async function executeCommand(command: Document) {
       else if (kind === 'audio') content = { audio: buffer, mimetype, ptt: false }
       else content = { document: buffer, mimetype, fileName, caption }
 
-      const sent = (await active.sendMessage(payload.jid, content as never))!
+      const sent = (await sendWithFallback(active, String(payload.jid), content as never))!
       await persistSentMessage(sent, { text: caption, type: kind })
       return { messageId: sent?.key?.id || null }
     }
@@ -781,21 +910,26 @@ async function executeCommand(command: Document) {
     case 'read': {
       const active = requireSocket()
       const { messages, chats } = await collections()
-      const last = await messages
-        .find({ jid: payload.jid, fromMe: { $ne: true } })
-        .sort({ ts: -1 })
-        .limit(1)
-        .toArray()
-      const keys = last
-        .filter((m) => m.id)
-        .map((m) => ({
-          remoteJid: String(payload.jid),
-          id: String(m.id),
-          fromMe: false,
-          participant: (m.participant as string) || undefined,
-        }))
-      if (keys.length) await active.readMessages(keys)
-      await chats.updateOne({ _id: payload.jid }, { $set: { unread: 0 } })
+      const targets = await aliasTargets(String(payload.jid))
+      const keys: Array<Record<string, unknown>> = []
+      for (const target of targets) {
+        const last = await messages
+          .find({ jid: target, fromMe: { $ne: true } })
+          .sort({ ts: -1 })
+          .limit(1)
+          .toArray()
+        for (const m of last) {
+          if (!m.id) continue
+          keys.push({
+            remoteJid: target,
+            id: String(m.id),
+            fromMe: false,
+            participant: (m.participant as string) || undefined,
+          })
+        }
+      }
+      if (keys.length) await active.readMessages(keys as never)
+      await chats.updateMany({ _id: { $in: targets } }, { $set: { unread: 0 } })
       return { read: keys.length }
     }
 
@@ -829,8 +963,9 @@ async function executeCommand(command: Document) {
     case 'sync-names': {
       await waitForSocket(8000)
       const groups = await syncAllGroupNames('manual')
+      const aliases = await syncJidAliases()
       const chatsBackfill = await backfillNamesFromMessages()
-      return { ok: true, groups, chats: chatsBackfill }
+      return { ok: true, groups, aliases, chats: chatsBackfill }
     }
 
     case 'avatar': {
@@ -838,28 +973,45 @@ async function executeCommand(command: Document) {
       const target = String(payload.jid || '')
       if (!target) throw new Error('jid wajib diisi')
       const { contacts } = await collections()
-      // 'preview' jauh lebih kecil (cocok untuk daftar chat); fallback ke 'image'.
-      const url =
-        (await active.profilePictureUrl(target, 'preview').catch(() => null)) ||
-        (await active.profilePictureUrl(target, 'image').catch(() => null))
+      // Coba JID yang diminta lalu aliasnya (LID ↔ nomor), 'preview' lalu 'image'.
+      const targets = await aliasTargets(target)
+      let url: string | null = null
+      let sourceJid: string | null = null
+      for (const candidate of targets) {
+        url =
+          (await active.profilePictureUrl(candidate, 'preview').catch(() => null)) ||
+          (await active.profilePictureUrl(candidate, 'image').catch(() => null)) ||
+          null
+        if (url) {
+          sourceJid = candidate
+          break
+        }
+      }
       if (!url) {
-        await contacts.updateOne({ _id: target }, { $set: { avatar: null, avatarAt: Date.now() } }, { upsert: true })
-        return { ok: true, empty: true }
+        await contacts.updateMany(
+          { _id: { $in: targets } },
+          { $set: { avatar: null, avatarAt: Date.now() } },
+          { upsert: true },
+        )
+        return { ok: true, empty: true, tried: targets }
       }
       const res = await fetch(url)
       if (!res.ok) throw new Error(`Gagal mengambil foto profil (${res.status})`)
       const buffer = Buffer.from(await res.arrayBuffer())
       if (buffer.length > 400 * 1024) throw new Error('Foto profil terlalu besar')
       const mimetype = res.headers.get('content-type') || 'image/jpeg'
-      await contacts.updateOne(
-        { _id: target },
-        {
-          $set: { avatar: buffer.toString('base64'), avatarMime: mimetype, avatarAt: Date.now() },
-          $unset: { avatarRequestedAt: '' },
-        },
-        { upsert: true },
-      )
-      return { ok: true, size: buffer.length, mimetype }
+      // Simpan untuk semua alias supaya baris chat versi LID maupun nomor dapat foto.
+      for (const candidate of targets) {
+        await contacts.updateOne(
+          { _id: candidate },
+          {
+            $set: { avatar: buffer.toString('base64'), avatarMime: mimetype, avatarAt: Date.now() },
+            $unset: { avatarRequestedAt: '' },
+          },
+          { upsert: true },
+        )
+      }
+      return { ok: true, size: buffer.length, mimetype, sourceJid, tried: targets }
     }
 
     case 'pair': {
@@ -1143,6 +1295,7 @@ async function start() {
         void (async () => {
           try {
             await syncAllGroupNames('open')
+            await syncJidAliases(120)
             await backfillNamesFromMessages()
           } catch (err) {
             logger.debug({ err }, 'sinkron nama saat connect gagal')
@@ -1249,18 +1402,30 @@ async function start() {
 
     sock.ev.on('contacts.upsert', async (contacts) => {
       for (const contact of contacts) {
+        if (contact.lid && contact.jid) await rememberJidAlias(contact.lid, contact.jid)
+        else if (contact.lid && contact.id) await rememberJidAlias(contact.lid, contact.jid || contact.id)
         const name = contact.name || contact.notify || contact.verifiedName
         if (!contact.id || !name) continue
         await rememberContact(contact.id, name)
+        if (contact.lid) await rememberContact(contact.lid, name)
+        if (contact.jid) await rememberContact(contact.jid, name)
         await ensureChat(contact.id, { name, isGroup: false })
+        for (const alias of [contact.lid, contact.jid]) {
+          if (alias && alias !== contact.id) await ensureChat(alias, { name, isGroup: false })
+        }
       }
     })
 
     sock.ev.on('contacts.update', async (contacts) => {
       for (const contact of contacts) {
+        if (contact.lid && (contact.jid || contact.id)) {
+          await rememberJidAlias(contact.lid, contact.jid || contact.id)
+        }
         const name = contact.name || contact.notify
         if (!contact.id || !name) continue
         await rememberContact(contact.id, name)
+        if (contact.lid) await rememberContact(contact.lid, name)
+        if (contact.jid) await rememberContact(contact.jid, name)
       }
     })
 

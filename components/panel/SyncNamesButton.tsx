@@ -6,6 +6,7 @@ import { RefreshIcon } from '@/components/icons'
 type SyncResult = {
   groups?: { groups?: number; total?: number }
   chats?: { updated?: number; total?: number }
+  aliases?: { mapped?: number; checked?: number }
 }
 
 /**
@@ -26,8 +27,9 @@ export default function SyncNamesButton({ compact = false }: { compact?: boolean
       if (!res.ok || !json.ok) throw new Error(json?.error || `Gagal menyinkronkan (${res.status})`)
       const groups = json.result?.groups?.groups ?? 0
       const chats = json.result?.chats?.updated ?? 0
+      const aliases = json.result?.aliases?.mapped ?? 0
       setState('done')
-      setMessage(`${groups} grup & ${chats} chat diperbarui`)
+      setMessage(`${groups} grup · ${chats} nama chat · ${aliases} ID (LID↔nomor) dipetakan`)
     } catch (err) {
       setState('error')
       setMessage(err instanceof Error ? err.message : 'Gagal menyinkronkan nama')

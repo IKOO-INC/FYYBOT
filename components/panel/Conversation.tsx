@@ -308,6 +308,12 @@ export default function Conversation({
 
   const title = chat?.name || prettyPhone(jid)
 
+  // Untuk chat ber-ID LID, tampilkan nomor aslinya (bukan angka LID).
+  const phoneJid =
+    chat?.jids?.find((item) => item.endsWith('@s.whatsapp.net')) ||
+    (jid.endsWith('@s.whatsapp.net') ? jid : null)
+  const phoneLabel = phoneJid ? prettyPhone(phoneJid) : prettyPhone(jid)
+
   // Foto profil chat yang sedang dibuka (diambil sekali, lalu di-cache 6 jam di worker).
   const [avatar, setAvatar] = useState<string | null>(null)
   useEffect(() => {
@@ -345,7 +351,7 @@ export default function Conversation({
         <div className="min-w-0 flex-1 leading-tight">
           <p className="truncate text-[14.5px] font-medium">{title}</p>
           <p className="truncate text-[11.5px] text-[var(--wa-text-soft)]">
-            {chat?.isGroup ? 'Grup WhatsApp' : prettyPhone(jid)}
+            {chat?.isGroup ? 'Grup WhatsApp' : phoneLabel}
             {online ? ' · tersambung' : ' · worker offline'}
           </p>
         </div>
@@ -580,7 +586,7 @@ export default function Conversation({
               <Avatar name={title} seed={jid} size={112} src={avatar} />
               <div className="text-center">
                 <p className="text-[16px] font-medium">{title}</p>
-                <p className="text-[12px] text-[var(--wa-text-soft)]">{chat?.isGroup ? 'Grup' : prettyPhone(jid)}</p>
+                <p className="text-[12px] text-[var(--wa-text-soft)]">{chat?.isGroup ? 'Grup' : phoneLabel}</p>
               </div>
             </div>
             <div className="border-b border-[var(--wa-border)] bg-[var(--wa-pane)] px-4 py-4">

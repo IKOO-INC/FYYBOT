@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server'
 import { badRequest, mongoError, requireAuth } from '@/lib/api'
-import { enqueueCommand } from '@/lib/store'
+import { enqueueCommand, preferredJid } from '@/lib/store'
 
 export const runtime = 'nodejs'
 
@@ -12,7 +12,7 @@ export async function POST(request: Request) {
     const body = (await request.json()) as { jid?: string; messageId?: string; emoji?: string; fromMe?: boolean }
     if (!body.jid || !body.messageId) return badRequest('jid dan messageId wajib diisi')
     const id = await enqueueCommand('react', {
-      jid: body.jid,
+      jid: await preferredJid(body.jid),
       messageId: body.messageId,
       emoji: String(body.emoji || ''),
       fromMe: Boolean(body.fromMe),
