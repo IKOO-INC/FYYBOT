@@ -76,6 +76,8 @@ export default function Inbox() {
   const [debounced, setDebounced] = useState('')
   const [showMenu, setShowMenu] = useState(false)
   const [avatars, setAvatars] = useState<Record<string, string>>({})
+  const [syncing, setSyncing] = useState(false)
+
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search)
@@ -91,6 +93,18 @@ export default function Inbox() {
   const chatsUrl = `/api/chats?filter=${filter}&q=${encodeURIComponent(debounced)}`
   const { data, refresh, setData } = usePoll<ChatsResponse>(chatsUrl, 4000)
   const { data: sessionData } = usePoll<SessionResponse>('/api/session', 6000)
+
+  const syncNames = useCallback(async () => {
+    setSyncing(true)
+    try {
+      await fetch('/api/session/sync-names', { method: 'POST' })
+      await refresh()
+    } catch {
+      /* abaikan: hasilnya terlihat di daftar chat */
+    } finally {
+      setSyncing(false)
+    }
+  }, [refresh])
 
   const chats = useMemo(() => {
     const list = [...(data?.chats || [])]
@@ -143,7 +157,7 @@ export default function Inbox() {
     void load()
     const timer = window.setInterval(() => {
       if (document.visibilityState === 'visible') void load()
-    }, 60_000)
+    }, 30_000)
     return () => {
       alive = false
       window.clearInterval(timer)
@@ -205,6 +219,18 @@ export default function Inbox() {
                   className="flex w-full items-center gap-2.5 px-3 py-2.5 text-left text-[13px] hover:bg-[var(--wa-pane-2)]"
                 >
                   <RefreshIcon size={15} className="text-[var(--wa-text-soft)]" /> Segarkan daftar chat
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowMenu(false)
+                    void syncNames()
+                  }}
+                  disabled={syncing}
+                  className="flex w-full items-center gap-2.5 px-3 py-2.5 text-left text-[13px] hover:bg-[var(--wa-pane-2)] disabled:opacity-60"
+                >
+                  <RefreshIcon size={15} className={`text-[var(--wa-text-soft)] ${syncing ? 'animate-spin' : ''}`} />
+                  {syncing ? 'Menyinkronkan nama…' : 'Sinkronkan nama & foto'}
                 </button>
               </div>
             )}

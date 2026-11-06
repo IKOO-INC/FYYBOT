@@ -440,6 +440,7 @@ memerlukan cookie sesi admin.
 | `POST /api/messages/media` | `multipart/form-data`: `jid`, `file`, `caption` |
 | `GET /api/messages/media?jid=&id=` | ambil media (202 = sedang diunduh worker) |
 | `GET /api/avatars?jids=a,b,c` | foto profil kontak/grup (data URL) + minta worker mengambil yang belum ada |
+| `POST /api/session/sync-names` | minta worker menyinkronkan nama semua grup + nama 1:1 (tombol di Pengaturan) |
 | `POST /api/messages/react` | `{ jid, messageId, emoji, fromMe }` |
 | `GET /api/health` | ping MongoDB + konfigurasi |
 
@@ -526,11 +527,14 @@ berhenti total saat sesi memang sudah ditolak.
 
 ## Nama, foto profil, dan media (hemat kuota)
 
-- **Nama chat:** panel memakai `wa_chats.name`; kalau kosong/masih berupa nomor, panel
-  mengambil nama dari `wa_contacts` (hasil `contacts.upsert/update` + `pushName`), lalu
-  fallback ke nomor yang diformat. Saat worker start, nama chat lama yang masih berupa
-  angka di-*backfill* dari `wa_contacts`; grup mengambil nama lewat `groupMetadata`
-  (maksimal sekali per 10 menit per grup).
+- **Nama chat:** urutannya `wa_chats.name` → `wa_contacts.name/notify/verifiedName` →
+  nama pengirim terakhir (`wa_messages.senderName`) → nomor terformat.
+  Saat worker tersambung, dua hal berjalan otomatis: `groupFetchAllParticipating()`
+  mengisi nama **semua grup sekaligus** (tanpa menunggu ada pesan baru), lalu nama 1:1
+  di-*backfill* dari `pushName` pesan terakhir. Grup yang baru menerima pesan tetap
+  disegarkan lewat `groupMetadata` (maks. sekali / 10 menit / grup).
+  Kalau masih ada yang bernomor, pakai tombol **“Sinkronkan nama & foto”** di
+  Pengaturan atau menu daftar chat (`POST /api/session/sync-names`).
 - **Foto profil:** disimpan worker di `wa_contacts.avatar` (base64, varian `preview`,
   maks 400 KB, cache 6 jam). Panel meminta `/api/avatars?jids=…` untuk chat yang terlihat
   saja; JID yang belum punya foto dipicu lewat perintah `avatar` dengan cooldown 10 menit.
